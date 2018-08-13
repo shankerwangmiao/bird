@@ -107,7 +107,7 @@ FID_STRUCT_IN()m4_dnl
 FID_NEW_ARGS()m4_dnl
   , struct f_inst * f$1
 FID_NEW_ATTRIBUTES()m4_dnl
-NONNULL(m4_eval($1+1))
+NONNULL(m4_eval($1+2))
 FID_NEW_BODY()m4_dnl
 whati->f$1 = f$1;
 const struct f_inst *child$1 = f$1;
@@ -119,7 +119,7 @@ FID_IFCONST([[
 ]])
 } while (child$1 = child$1->next);
 FID_LINEARIZE_BODY
-pos = linearize(dest, whati->f$1, pos);
+pos = linearize(ctx, dest, whati->f$1, pos);
 FID_INTERPRET_BODY()')
 
 #	Some instructions accept variable number of arguments.
@@ -151,7 +151,7 @@ FID_IFCONST([[
   }
 ]])
 FID_LINEARIZE_BODY()m4_dnl
-  pos = linearize(dest, whati->fvar, pos);
+  pos = linearize(ctx, dest, whati->fvar, pos);
   item->varcount = whati->varcount;
 FID_DUMP_BODY()m4_dnl
   debug("%snumber of varargs %u\n", INDENT, item->varcount);
@@ -213,7 +213,7 @@ whati->f$1 = f$1;
 FID_DUMP_BODY()m4_dnl
 f_dump_line(item->fl$1, indent + 1);
 FID_LINEARIZE_BODY()m4_dnl
-item->fl$1 = f_linearize(whati->f$1);
+item->fl$1 = f_linearize(ctx, whati->f$1);
 FID_SAME_BODY()m4_dnl
 if (!f_same(f1->fl$1, f2->fl$1)) return 0;
 FID_INTERPRET_EXEC()m4_dnl
@@ -310,7 +310,7 @@ FID_HIC(
 [[m4_dnl				 Public declaration of constructor in H file
 struct f_inst *
 m4_undivert(109)m4_dnl
-f_new_inst_]]INST_NAME()[[(enum f_instruction_code fi_code
+f_new_inst_]]INST_NAME()[[(struct cf_context *ctx, enum f_instruction_code fi_code
 m4_undivert(102)m4_dnl
 );]],
 [[m4_dnl				 The one case in The Big Switch inside interpreter
@@ -324,12 +324,12 @@ m4_undivert(102)m4_dnl
 [[m4_dnl				 Constructor itself
 struct f_inst *
 m4_undivert(109)m4_dnl
-f_new_inst_]]INST_NAME()[[(enum f_instruction_code fi_code
+f_new_inst_]]INST_NAME()[[(struct cf_context *ctx, enum f_instruction_code fi_code
 m4_undivert(102)m4_dnl
 )
   {
     /* Allocate the structure */
-    struct f_inst *what = fi_new(fi_code);
+    struct f_inst *what = fi_new(ctx, fi_code);
     FID_IFCONST([[uint constargs = 1;]])
 
     /* Initialize all the members */
@@ -442,6 +442,7 @@ FID_WR_DIRECT(C)
 #include "nest/bird.h"
 #include "filter/filter.h"
 #include "filter/f-inst.h"
+#include "conf/parser.h"
 
 /* Instruction codes to string */
 static const char * const f_instruction_name_str[] = {
@@ -458,10 +459,10 @@ f_instruction_name_(enum f_instruction_code fi)
 }
 
 static inline struct f_inst *
-fi_new(enum f_instruction_code fi_code)
+fi_new(struct cf_context *ctx, enum f_instruction_code fi_code)
 {
   struct f_inst *what = cfg_allocz(sizeof(struct f_inst));
-  what->lineno = ifs->lino;
+  what->lineno = ctx->order->state->lino;
   what->size = 1;
   what->fi_code = fi_code;
   return what;
@@ -498,8 +499,8 @@ f_const_promotion(struct f_inst *arg, enum f_type want)
 #define v2 whati->f2->i_FI_CONSTANT.val
 #define v3 whati->f3->i_FI_CONSTANT.val
 #define vv(i) items[i]->i_FI_CONSTANT.val
-#define runtime(fmt, ...) cf_error("filter preevaluation, line %d: " fmt, ifs->lino, ##__VA_ARGS__)
-#define fpool cfg_mem
+#define runtime(fmt, ...) cf_error("filter preevaluation, line %d: " fmt, ctx->order->state->lino, ##__VA_ARGS__)
+#define fpool ctx->cfg_mem
 #define falloc(size) cfg_alloc(size)
 /* Instruction constructors */
 FID_WR_PUT(3)
@@ -534,7 +535,7 @@ FID_WR_PUT(7)
 
 /* Linearize */
 static uint
-linearize(struct f_line *dest, const struct f_inst *what, uint pos)
+linearize(struct cf_context *ctx, struct f_line *dest, const struct f_inst *what, uint pos)
 {
   for ( ; what; what = what->next) {
     switch (what->fi_code) {
@@ -546,17 +547,15 @@ FID_WR_PUT(8)
 }
 
 struct f_line *
-f_linearize_concat(const struct f_inst * const inst[], uint count)
+f_linearize(struct cf_context *ctx, const struct f_inst *inst)
 {
   uint len = 0;
-  for (uint i=0; i<count; i++)
-    for (const struct f_inst *what = inst[i]; what; what = what->next)
-      len += what->size;
+  for (const struct f_inst *what = inst; what; what = what->next)
+    len += what->size;
 
   struct f_line *out = cfg_allocz(sizeof(struct f_line) + sizeof(struct f_line_item)*len);
 
-  for (uint i=0; i<count; i++)
-    out->len = linearize(out, inst[i], out->len);
+  out->len = linearize(ctx, out, inst, out->len);
 
 #ifdef LOCAL_DEBUG
   f_dump_line(out, 0);

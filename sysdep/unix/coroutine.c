@@ -51,6 +51,7 @@
 
 static _Thread_local event *ev_local = NULL;
 static _Thread_local struct birdsock *sk_local = NULL;
+_Thread_local struct linpool *lp_local = NULL;	/* Local linpool for temporary allocations */
 
 list coro_list;
 
@@ -63,6 +64,8 @@ struct coroutine {
   pthread_attr_t attr;			/* Attributes (stack size, detachable, etc.) */
   struct domain_generic * _Atomic wfl;	/* Waiting for this lock */
   _Atomic _Bool cancelled;		/* Synchronous cancel has been requested */
+
+  struct linpool *lp_local;		/* Local linpool for temporary allocations */
 
   enum coro_flags {
     CORO_REPEAT = 0x2,			/* Run once more */
@@ -256,6 +259,7 @@ ev_dump(event *e)
 static void coro_free(LOCKED(event_state), struct coroutine *c)
 {
   rem_node(&UNLOCKED_STRUCT(event_state, c)->n);
+  rfree(c->lp_local);
 
   switch (c->flags & CORO_KIND_MASK) 
   {
@@ -374,6 +378,7 @@ static void *ev_entry(void *_coro)
 
   DBG("ev_entry(%p)\n", _coro);
   coro_local = _coro;
+  lp_local = coro_local->coro.lp_local;
 
   EVENT_LOCKED ({ return coro_local; })
   {
@@ -430,9 +435,13 @@ static void *ev_entry(void *_coro)
     return NULL;
 }
 
+static pool *thread_local_lp_pool = NULL;
+
 void coro_start(LOCKED(event_state), struct coroutine *coro, void *(*entry)(void *))
 {
   EVENT_LOCKED_INIT_LOCK(coro);
+
+  coro->lp_local = lp_new_default(thread_local_lp_pool);
 
   int e = 0;
   if (e = pthread_attr_init(&coro->attr))
@@ -587,6 +596,7 @@ static void *sk_entry(void *data)
   DBG("sk_entry(%p)\n", data);
   coro_local = data;
 
+  lp_local = coro_local->coro.lp_local;
   sk_local = coro_local->sock.socket;
   timeloop_current = &main_timeloop; /* TODO: use local timers if appropriate */
 
@@ -769,6 +779,13 @@ coro_init(void)
   main_thread_coro.coro.id = pthread_self();
   coro_local = &main_thread_coro;
   init_list(&coro_list);
+}
+
+void
+coro_resource_init(void)
+{
+  thread_local_lp_pool = rp_new(&root_pool, "Thread local linpools");
+  lp_local = main_thread_coro.coro.lp_local = lp_new_default(thread_local_lp_pool);
 }
 
 static uint

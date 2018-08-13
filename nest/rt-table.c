@@ -38,6 +38,7 @@
 #include "lib/event.h"
 #include "lib/string.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 #include "filter/filter.h"
 #include "filter/data.h"
 #include "lib/hash.h"
@@ -1943,12 +1944,12 @@ again:
 }
 
 void
-rt_preconfig(struct config *c)
+rt_preconfig(struct cf_context *ctx)
 {
-  init_list(&c->tables);
+  init_list(&ctx->new_config->tables);
 
-  rt_new_table(cf_get_symbol("master4"), NET_IP4);
-  rt_new_table(cf_get_symbol("master6"), NET_IP6);
+  rt_new_table(ctx, cf_get_symbol(ctx, "master4"), NET_IP4);
+  rt_new_table(ctx, cf_get_symbol(ctx, "master6"), NET_IP6);
 }
 
 
@@ -2257,27 +2258,27 @@ rt_next_hop_update(rtable *tab)
 
 
 struct rtable_config *
-rt_new_table(struct symbol *s, uint addr_type)
+rt_new_table(struct cf_context *ctx, struct symbol *s, uint addr_type)
 {
   /* Hack that allows to 'redefine' the master table */
   if ((s->class == SYM_TABLE) &&
-      (s->table == new_config->def_tables[addr_type]) &&
+      (s->table == ctx->new_config->def_tables[addr_type]) &&
       ((addr_type == NET_IP4) || (addr_type == NET_IP6)))
     return s->table;
 
   struct rtable_config *c = cfg_allocz(sizeof(struct rtable_config));
 
-  cf_define_symbol(s, SYM_TABLE, table, c);
+  cf_define_symbol(ctx, s, SYM_TABLE, table, c);
   c->name = s->name;
   c->addr_type = addr_type;
   c->gc_max_ops = 1000;
   c->gc_min_time = 5;
 
-  add_tail(&new_config->tables, &c->n);
+  add_tail(&ctx->new_config->tables, &c->n);
 
   /* First table of each type is kept as default */
-  if (! new_config->def_tables[addr_type])
-    new_config->def_tables[addr_type] = c;
+  if (!ctx->new_config->def_tables[addr_type])
+    ctx->new_config->def_tables[addr_type] = c;
 
   return c;
 }

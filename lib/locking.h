@@ -12,6 +12,9 @@
 /* Init on BIRD startup */
 void coro_init(void);
 
+/* Init on BIRD startup after resources are inited */
+void coro_resource_init(void);
+
 /* Locking */
 struct domain_generic;
 
@@ -136,5 +139,8 @@ extern DOMAIN(the_bird) the_bird_domain;
 #define THE_BIRD_LOCKED(cleanup)  LOCKED_DO(the_bird, the_bird_domain, cleanup)
 
 #define assert_bird_lock() ASSERT_DIE(SUPER_LOCK(the_bird).the_bird == the_bird_domain.the_bird)
+
+/* Thread-local resources available for use without locking */
+extern _Thread_local struct linpool *lp_local;
 
 #endif

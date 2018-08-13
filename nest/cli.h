@@ -50,7 +50,7 @@ extern _Thread_local struct cli *this_cli;		/* Used during parsing */
 
 /* Functions to be called by command handlers */
 
-void cli_printf(cli *, int, char *, ...);
+void cli_printf(cli *, int, const char *, ...);
 #define cli_msg(x...) cli_printf(this_cli, x)
 #if 0
 void cli_set_log_echo(cli *, uint mask, uint size);

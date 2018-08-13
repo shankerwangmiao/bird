@@ -72,7 +72,7 @@ int
 main(int argc, char *argv[])
 {
   bt_init(argc, argv);
-  bt_bird_init();
+  struct cf_context *ctx = bt_bird_init();
 
   bt_assert_hook = bt_assert_filter;
 
@@ -86,6 +86,6 @@ main(int argc, char *argv[])
   WALK_LIST(t, config->tests)
     bt_test_suite_base(run_function, t->fn_name, t, BT_FORKING, BT_TIMEOUT, "%s", t->dsc);
 
-  bt_bird_cleanup();
+  bt_bird_cleanup(ctx);
   return bt_exit_value();
 }
