@@ -296,9 +296,9 @@ radv_prepare_ra(struct radv_iface *ifa)
   struct radv_iface_config *ic = ifa->cf;
   btime now = current_time();
 
-  char *buf = ifa->sk->tbuf;
+  char *buf = ifa->buf;
   char *bufstart = buf;
-  char *bufend = buf + ifa->sk->tbsize;
+  char *bufend = buf + sizeof(buf); // bufsize(ifa)
 
   struct radv_ra_packet *pkt = (void *) buf;
   pkt->type = ICMPV6_RA;
@@ -376,10 +376,6 @@ radv_send_ra(struct radv_iface *ifa, ip_addr to)
 {
   struct radv_proto *p = ifa->ra;
 
-  /* TX queue is already full */
-  if (!sk_tx_buffer_empty(ifa->sk))
-    return;
-
   if (ifa->valid_time <= current_time())
     radv_invalidate(ifa);
 
@@ -397,9 +393,12 @@ radv_send_ra(struct radv_iface *ifa, ip_addr to)
     RADV_TRACE(D_PACKETS, "Sending RA to %I via %s", to, ifa->iface->name);
   }
 
-  int done = sk_send_to(ifa->sk, ifa->plen, to, 0);
+  int done = sk_send_to(ifa->sk, ifa->buf, ifa->plen, to, 0);
   if (!done)
+  {
     log(L_WARN "%s: TX queue full on %s", p->p.name, ifa->iface->name);
+    ifa->tx_stuck = 1;
+  }
 }
 
 
@@ -415,8 +414,8 @@ radv_receive_rs(struct radv_proto *p, struct radv_iface *ifa, ip_addr from)
     radv_iface_notify(ifa, RA_EV_RS);
 }
 
-static int
-radv_rx_hook(sock *sk, uint size)
+static uint
+radv_rx_hook(sock *sk, byte *buf, uint size)
 {
   struct radv_iface *ifa = sk->data;
   struct radv_proto *p = ifa->ra;
@@ -430,8 +429,6 @@ radv_rx_hook(sock *sk, uint size)
 
   if (size < 8)
     return 1;
-
-  byte *buf = sk->rbuf;
 
   if (buf[1] != 0)
     return 1;
@@ -456,14 +453,23 @@ radv_rx_hook(sock *sk, uint size)
   }
 }
 
-static void
+static _Bool
 radv_tx_hook(sock *sk)
 {
   struct radv_iface *ifa = sk->data;
   log(L_INFO "%s: TX queue ready on %s", ifa->ra->p.name, ifa->iface->name);
 
-  /* Some RAs may be missed due to full TX queue */
-  radv_iface_notify(ifa, RA_EV_RS);
+  ASSERT_DIE(ifa->tx_stuck);
+  ifa->tx_stuck = 0;
+
+  if (ifa->tx_expired)
+  {
+    /* We missed some RAs due to full TX queue */
+    ifa->tx_expired = 0;
+    radv_send_ra(ifa, IPA_NONE);
+  }
+  
+  return 0;
 }
 
 static void
@@ -484,16 +490,20 @@ radv_sk_open(struct radv_iface *ifa)
   sk->vrf = ifa->ra->p.vrf;
 
   sk->ttl = 255; /* Mandatory for Neighbor Discovery packets */
-  sk->rx_hook = radv_rx_hook;
-  sk->tx_hook = radv_tx_hook;
-  sk->err_hook = radv_err_hook;
+
+  EVENT_LOCKED_INIT(sk,
+      .rx_hook = radv_rx_hook,
+      .tx_hook = radv_tx_hook,
+      .rx_err = radv_err_hook,
+      .tx_err = radv_err_hook,
+      .rbsize = 1024, // bufsize(ifa);
+      );
+
   sk->iface = ifa->iface;
-  sk->rbsize = 1024; // bufsize(ifa);
-  sk->tbsize = 1024; // bufsize(ifa);
   sk->data = ifa;
   sk->flags = SKF_LADDR_RX;
 
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, &ifa->ra->p) < 0)
     goto err;
 
   /* We want listen just to ICMPv6 messages of type RS and RA */
@@ -507,6 +517,7 @@ radv_sk_open(struct radv_iface *ifa)
     goto err;
 
   ifa->sk = sk;
+  sk_schedule_rx(sk);
   return 1;
 
  err:

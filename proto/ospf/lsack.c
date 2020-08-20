@@ -84,13 +84,12 @@ ospf_send_lsack_(struct ospf_proto *p, struct ospf_neighbor *n, int queue)
 {
   struct ospf_iface *ifa = n->ifa;
   struct ospf_lsa_header *lsas;
-  struct ospf_packet *pkt;
+  struct ospf_packet *pkt = alloca(ospf_pkt_maxsize(ifa));
   struct lsa_node *no;
   uint i, lsa_max, length;
 
   /* RFC 2328 13.5 */
 
-  pkt = ospf_tx_buffer(ifa);
   ospf_pkt_fill_hdr(ifa, pkt, LSACK_P);
   ospf_lsack_body(p, pkt, &lsas, &lsa_max);
 
@@ -110,7 +109,7 @@ ospf_send_lsack_(struct ospf_proto *p, struct ospf_neighbor *n, int queue)
   if (queue == ACKL_DIRECT)
   {
     OSPF_PACKET(ospf_dump_lsack, pkt, "LSACK packet sent to nbr %R on %s", n->rid, ifa->ifname);
-    ospf_send_to(ifa, n->ip);
+    ospf_send_to(pkt, ifa, n->ip);
     return;
   }
 
@@ -119,12 +118,12 @@ ospf_send_lsack_(struct ospf_proto *p, struct ospf_neighbor *n, int queue)
   if (ifa->type == OSPF_IT_BCAST)
   {
     if ((ifa->state == OSPF_IS_DR) || (ifa->state == OSPF_IS_BACKUP))
-      ospf_send_to_all(ifa);
+      ospf_send_to_all(pkt, ifa);
     else
-      ospf_send_to_des(ifa);
+      ospf_send_to_des(pkt, ifa);
   }
   else
-    ospf_send_to_agt(ifa, NEIGHBOR_EXCHANGE);
+    ospf_send_to_agt(pkt, ifa, NEIGHBOR_EXCHANGE);
 }
 
 void

@@ -298,7 +298,6 @@ cmd_reconfig_undo_notify(void)
     {
       cli *c = cmd_reconfig_stored_cli;
       cli_printf(c, CLI_ASYNC_CODE, "Config timeout expired, starting undo");
-      cli_write_trigger(c);
     }
 }
 
@@ -374,113 +373,7 @@ cmd_reconfig_status(void)
 static sock *cli_sk;
 static char *path_control_socket = PATH_CONTROL_SOCKET;
 
-
-static void
-cli_write(cli *c)
-{
-  sock *s = c->priv;
-
-  while (c->tx_pos)
-    {
-      struct cli_out *o = c->tx_pos;
-
-      int len = o->wpos - o->outpos;
-      s->tbuf = o->outpos;
-      o->outpos = o->wpos;
-
-      if (sk_send(s, len) <= 0)
-	return;
-
-      c->tx_pos = o->next;
-    }
-
-  /* Everything is written */
-  s->tbuf = NULL;
-  cli_written(c);
-}
-
-void
-cli_write_trigger(cli *c)
-{
-  sock *s = c->priv;
-
-  if (s->tbuf == NULL)
-    cli_write(c);
-}
-
-static void
-cli_tx(sock *s)
-{
-  cli_write(s->data);
-}
-
-int
-cli_get_command(cli *c)
-{
-  sock *s = c->priv;
-  byte *t = c->rx_aux ? : s->rbuf;
-  byte *tend = s->rpos;
-  byte *d = c->rx_pos;
-  byte *dend = c->rx_buf + CLI_RX_BUF_SIZE - 2;
-
-  while (t < tend)
-    {
-      if (*t == '\r')
-	t++;
-      else if (*t == '\n')
-	{
-	  t++;
-	  c->rx_pos = c->rx_buf;
-	  c->rx_aux = t;
-	  *d = 0;
-	  return (d < dend) ? 1 : -1;
-	}
-      else if (d < dend)
-	*d++ = *t++;
-    }
-  c->rx_aux = s->rpos = s->rbuf;
-  c->rx_pos = d;
-  return 0;
-}
-
-static int
-cli_rx(sock *s, uint size UNUSED)
-{
-  cli_kick(s->data);
-  return 0;
-}
-
-static void
-cli_err(sock *s, int err)
-{
-  if (config->cli_debug)
-    {
-      if (err)
-	log(L_INFO "CLI connection dropped: %s", strerror(err));
-      else
-	log(L_INFO "CLI connection closed");
-    }
-  cli_free(s->data);
-}
-
-static int
-cli_connect(sock *s, uint size UNUSED)
-{
-  cli *c;
-
-  if (config->cli_debug)
-    log(L_INFO "CLI connect");
-  s->rx_hook = cli_rx;
-  s->tx_hook = cli_tx;
-  s->err_hook = cli_err;
-  s->data = c = cli_new(s);
-  s->pool = c->pool;		/* We need to have all the socket buffers allocated in the cli pool */
-  s->fast_rx = 1;
-  c->rx_pos = c->rx_buf;
-  c->rx_aux = NULL;
-  rmove(s, c->pool);
-  return 1;
-}
+void cli_sock_info(LOCKED(event_state), sock *s, char *buf, uint len);
 
 static void
 cli_init_unix(uid_t use_uid, gid_t use_gid)
@@ -490,9 +383,11 @@ cli_init_unix(uid_t use_uid, gid_t use_gid)
   cli_init();
   s = cli_sk = sk_new(cli_pool);
   s->type = SK_UNIX_PASSIVE;
-  s->rx_hook = cli_connect;
-  s->rbsize = 1024;
-  s->fast_rx = 1;
+  EVENT_LOCKED_INIT(s, 
+      .rx_hook = cli_connect,
+      .cli_info = cli_sock_info,
+      .rbsize = 1024,
+      );
 
   /* Return value intentionally ignored */
   unlink(path_control_socket);
@@ -506,6 +401,8 @@ cli_init_unix(uid_t use_uid, gid_t use_gid)
 
   if (chmod(path_control_socket, 0660) < 0)
     die("chmod: %m");
+
+  sk_schedule_rx(s);
 }
 
 /*
@@ -614,6 +511,7 @@ handle_sighup(int sig UNUSED)
 {
   DBG("Caught SIGHUP...\n");
   async_config_flag = 1;
+  write(main_timeloop.fds[1], "", 1);
 }
 
 static void
@@ -621,6 +519,7 @@ handle_sigusr(int sig UNUSED)
 {
   DBG("Caught SIGUSR...\n");
   async_dump_flag = 1;
+  write(main_timeloop.fds[1], "", 1);
 }
 
 static void
@@ -628,6 +527,7 @@ handle_sigterm(int sig UNUSED)
 {
   DBG("Caught SIGTERM...\n");
   async_shutdown_flag = 1;
+  write(main_timeloop.fds[1], "", 1);
 }
 
 void watchdog_sigalrm(int sig UNUSED);

@@ -210,8 +210,7 @@ ospf_enqueue_lsa(struct ospf_proto *p, struct top_hash_entry *en, struct ospf_if
   ifa->flood_queue[ifa->flood_queue_used] = en;
   ifa->flood_queue_used++;
 
-  if (!ev_active(p->flood_event))
-    ev_schedule(p->flood_event);
+  ev_schedule(p->flood_event);
 }
 
 void
@@ -330,13 +329,11 @@ ospf_flood_lsa(struct ospf_proto *p, struct top_hash_entry *en, struct ospf_neig
 }
 
 static uint
-ospf_prepare_lsupd(struct ospf_proto *p, struct ospf_iface *ifa,
+ospf_prepare_lsupd(struct ospf_proto *p, struct ospf_iface *ifa, struct ospf_packet *pkt,
 		   struct top_hash_entry **lsa_list, uint lsa_count)
 {
-  struct ospf_packet *pkt;
   uint hlen, pos, i, maxsize;
 
-  pkt = ospf_tx_buffer(ifa);
   hlen = ospf_lsupd_hdrlen(p);
   maxsize = ospf_pkt_maxsize(ifa);
 
@@ -354,17 +351,15 @@ ospf_prepare_lsupd(struct ospf_proto *p, struct ospf_iface *ifa,
       if (i > 0)
 	break;
 
-      /* LSA is larger than MTU, check buffer size */
-      if (ospf_iface_assure_bufsize(ifa, pos + len) < 0)
+      /* LSA may be larger than MTU, check buffer size */
+      uint plen = pos + len + ifa->tx_hdrlen;
+      if (plen > ifa->tx_bufsize && (ifa->cf->rx_buffer || (plen > 0xffff)))
       {
 	/* Cannot fit in a tx buffer, skip that */
 	log(L_ERR "%s: LSA too large to send on %s (Type: %04x, Id: %R, Rt: %R)",
 	    p->p.name, ifa->ifname, en->lsa_type, en->lsa.id, en->lsa.rt);
 	break;
       }
-
-      /* TX buffer could be reallocated */
-      pkt = ospf_tx_buffer(ifa);
     }
 
     struct ospf_lsa_header *buf = ((void *) pkt) + pos;
@@ -388,25 +383,27 @@ ospf_flood_lsupd(struct ospf_proto *p, struct top_hash_entry **lsa_list, uint ls
 {
   uint i, c;
 
+  struct ospf_packet *pkt = alloca(OSPF_MAX_PKT_SIZE);
+
   for (i = 0; i < lsa_min_count; i += c)
   {
-    c = ospf_prepare_lsupd(p, ifa, lsa_list + i, lsa_count - i);
+    c = ospf_prepare_lsupd(p, ifa, pkt, lsa_list + i, lsa_count - i);
 
     if (!c)	/* Too large LSA */
       { i++; continue; }
 
-    OSPF_PACKET(ospf_dump_lsupd, ospf_tx_buffer(ifa),
+    OSPF_PACKET(ospf_dump_lsupd, pkt,
 		"LSUPD packet flooded via %s", ifa->ifname);
 
     if (ifa->type == OSPF_IT_BCAST)
     {
       if ((ifa->state == OSPF_IS_DR) || (ifa->state == OSPF_IS_BACKUP))
-	ospf_send_to_all(ifa);
+	ospf_send_to_all(pkt, ifa);
       else
-	ospf_send_to_des(ifa);
+	ospf_send_to_des(pkt, ifa);
     }
     else
-      ospf_send_to_agt(ifa, NEIGHBOR_EXCHANGE);
+      ospf_send_to_agt(pkt, ifa, NEIGHBOR_EXCHANGE);
   }
 
   return i;
@@ -418,17 +415,19 @@ ospf_send_lsupd(struct ospf_proto *p, struct top_hash_entry **lsa_list, uint lsa
   struct ospf_iface *ifa = n->ifa;
   uint i, c;
 
+  struct ospf_packet *pkt = alloca(OSPF_MAX_PKT_SIZE);
+
   for (i = 0; i < lsa_count; i += c)
   {
-    c = ospf_prepare_lsupd(p, ifa, lsa_list + i, lsa_count - i);
+    c = ospf_prepare_lsupd(p, ifa, pkt, lsa_list + i, lsa_count - i);
 
     if (!c)	/* Too large LSA */
       { i++; continue; }
 
-    OSPF_PACKET(ospf_dump_lsupd, ospf_tx_buffer(ifa),
+    OSPF_PACKET(ospf_dump_lsupd, pkt,
 		"LSUPD packet sent to nbr %R on %s", n->rid, ifa->ifname);
 
-    ospf_send_to(ifa, n->ip);
+    ospf_send_to(pkt, ifa, n->ip);
   }
 
   return i;
@@ -702,11 +701,8 @@ ospf_receive_lsupd(struct ospf_packet *pkt, struct ospf_iface *ifa,
   ospf_send_lsack(p, n, ACKL_DIRECT);
 
   /* Send enqueued LSAs immediately, do not wait for flood_event */
-  if (ev_active(p->flood_event))
-  {
-    ev_cancel(p->flood_event);
+  if (ev_cancel(p->flood_event))
     ospf_flood_event(p);
-  }
 
   /*
    * During loading, we should ask for another batch of LSAs. This is only

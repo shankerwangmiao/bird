@@ -133,8 +133,7 @@ static_mark_rte(struct static_proto *p, struct static_route *r)
   r->state = SRS_DIRTY;
   BUFFER_PUSH(p->marked) = r;
 
-  if (!ev_active(p->event))
-    ev_schedule(p->event);
+  ev_schedule(p->event);
 }
 
 static void

@@ -618,7 +618,7 @@ rip_iface_update_buffers(struct rip_iface *ifa)
   rbsize = MAX(rbsize, tbsize);
 
   sk_set_rbsize(ifa->sk, rbsize);
-  sk_set_tbsize(ifa->sk, tbsize);
+  ifa->tx_bufsize = tbsize;
 
   uint headers = (rip_is_v2(ifa->rip) ? IP4_HEADER_LENGTH : IP6_HEADER_LENGTH) + UDP_HEADER_LENGTH;
   ifa->tx_plen = tbsize - headers;

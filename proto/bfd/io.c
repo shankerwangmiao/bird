@@ -99,24 +99,6 @@ pipe_drain(int fd)
     goto try;
 }
 
-void
-pipe_kick(int fd)
-{
-  u64 v = 1;
-  int rv;
-
- try:
-  rv = write(fd, &v, sizeof(u64));
-  if (rv < 0)
-  {
-    if (errno == EINTR)
-      goto try;
-    if (errno == EAGAIN)
-      return;
-    die("wakeup write: %m");
-  }
-}
-
 static inline void
 wakeup_init(struct birdloop *loop)
 {

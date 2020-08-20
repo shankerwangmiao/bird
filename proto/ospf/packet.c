@@ -102,7 +102,7 @@ ospf_pkt_finalize2(struct ospf_iface *ifa, struct ospf_packet *pkt, uint *plen)
     byte *auth_tail = ((byte *) pkt + *plen);
     *plen += auth_len;
 
-    ASSERT(*plen < ifa->sk->tbsize);
+    ASSERT(*plen < ifa->tx_bufsize);
 
     auth->c32.zero = 0;
     auth->c32.keyid = pass->id;
@@ -152,7 +152,7 @@ ospf_pkt_finalize3(struct ospf_iface *ifa, struct ospf_packet *pkt, uint *plen, 
   uint auth_len = sizeof(struct ospf_auth3) + mac_len;
   *plen += auth_len;
 
-  ASSERT(*plen < ifa->sk->tbsize);
+  ASSERT(*plen < ifa->tx_bufsize);
 
   memset(auth, 0, sizeof(struct ospf_auth3));
   auth->type = htons(OSPF3_AUTH_HMAC);
@@ -381,8 +381,8 @@ drop:
  * authentication, checksums, size) are done before the packet is passed to
  * non generic functions.
  */
-int
-ospf_rx_hook(sock *sk, uint len)
+uint
+ospf_rx_hook(sock *sk, byte *buf, uint len)
 {
   /* We want just packets from sk->iface. Unfortunately, on BSD we cannot filter
      out other packets at kernel level and we receive all packets on all sockets */
@@ -436,11 +436,21 @@ ospf_rx_hook(sock *sk, uint len)
   }
 
   /* Second, we check packet length, checksum, and the protocol version */
-  struct ospf_packet *pkt = (void *) sk_rx_buffer(sk, &len);
+  if (ospf_is_v2(p))
+  {
+    /* Stripping raw IP header from the IPv4 packet */
+    if ((len < 20) || ((*buf & 0xf0) != 0x40))
+      DROP("too short", len);
 
+    uint hlen = (*buf & 0x0f) * 4;
+    if ((hlen < 20) || (hlen > len))
+      DROP("bad IP header length", len);
 
-  if (pkt == NULL)
-    DROP("bad IP header", len);
+    len -= hlen;
+    buf += hlen;
+  }
+
+  struct ospf_packet *pkt = (void *) buf;
 
   if (len < sizeof(struct ospf_packet))
     DROP("too short", len);
@@ -460,8 +470,12 @@ ospf_rx_hook(sock *sk, uint len)
     uint bs = plen + 256;
     bs = BIRD_ALIGN(bs, 1024);
 
-    if (!ifa->cf->rx_buffer && (bs > sk->rbsize))
-      sk_set_rbsize(sk, bs);
+    EVENT_LOCKED
+    {
+      AUTO_TYPE su = UNLOCKED_STRUCT(event_state, sk);
+      if (!ifa->cf->rx_buffer && (bs > su->rbsize))
+	su->rbsize = bs;
+    }
 
     DROP("truncated", plen);
   }
@@ -648,10 +662,9 @@ ospf_verr_hook(sock *sk, int err)
 }
 
 void
-ospf_send_to(struct ospf_iface *ifa, ip_addr dst)
+ospf_send_to(struct ospf_packet *pkt, struct ospf_iface *ifa, ip_addr dst)
 {
   sock *sk = ifa->sk;
-  struct ospf_packet *pkt = (struct ospf_packet *) sk->tbuf;
   uint plen = ntohs(pkt->length);
 
   if (ospf_is_v2(ifa->oa->po))
@@ -659,26 +672,26 @@ ospf_send_to(struct ospf_iface *ifa, ip_addr dst)
   else
     ospf_pkt_finalize3(ifa, pkt, &plen, sk->saddr);
 
-  int done = sk_send_to(sk, plen, dst, 0);
+  int done = sk_send_to(sk, pkt, plen, dst, 0);
   if (!done)
     log(L_WARN "OSPF: TX queue full on %s", ifa->ifname);
 }
 
 void
-ospf_send_to_agt(struct ospf_iface *ifa, u8 state)
+ospf_send_to_agt(struct ospf_packet *pkt, struct ospf_iface *ifa, u8 state)
 {
   struct ospf_neighbor *n;
 
   WALK_LIST(n, ifa->neigh_list)
     if (n->state >= state)
-      ospf_send_to(ifa, n->ip);
+      ospf_send_to(pkt, ifa, n->ip);
 }
 
 void
-ospf_send_to_bdr(struct ospf_iface *ifa)
+ospf_send_to_bdr(struct ospf_packet *pkt, struct ospf_iface *ifa)
 {
   if (ipa_nonzero2(ifa->drip))
-    ospf_send_to(ifa, ifa->drip);
+    ospf_send_to(pkt, ifa, ifa->drip);
   if (ipa_nonzero2(ifa->bdrip))
-    ospf_send_to(ifa, ifa->bdrip);
+    ospf_send_to(pkt, ifa, ifa->bdrip);
 }

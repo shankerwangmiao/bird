@@ -80,6 +80,8 @@ void config_add_obstacle(struct config *);
 void config_del_obstacle(struct config *);
 void order_shutdown(int gr);
 
+extern _Bool shutting_down;
+
 #define RECONFIG_NONE	0
 #define RECONFIG_HARD	1
 #define RECONFIG_SOFT	2

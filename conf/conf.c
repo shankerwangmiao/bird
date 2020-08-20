@@ -72,7 +72,7 @@ static event *config_event;		/* Event for finalizing reconfiguration */
 static timer *config_timer;		/* Timer for scheduled configuration rollback */
 
 /* These are public just for cmd_show_status(), should not be accessed elsewhere */
-int shutting_down;			/* Shutdown requested, do not accept new config changes */
+_Bool shutting_down;			/* Shutdown requested, do not accept new config changes */
 int configuring;			/* Reconfiguration is running */
 int undo_available;			/* Undo was not requested from last reconfiguration */
 /* Note that both shutting_down and undo_available are related to requests, not processing */

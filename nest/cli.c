@@ -48,19 +48,6 @@
  * currently parsed, but it's of course available only in command handlers
  * not entered using the @cont hook.
  *
- * TX buffer management works as follows: At cli.tx_buf there is a
- * list of TX buffers (struct cli_out), cli.tx_write is the buffer
- * currently used by the producer (cli_printf(), cli_alloc_out()) and
- * cli.tx_pos is the buffer currently used by the consumer
- * (cli_write(), in system dependent code). The producer uses
- * cli_out.wpos ptr as the current write position and the consumer
- * uses cli_out.outpos ptr as the current read position. When the
- * producer produces something, it calls cli_write_trigger(). If there
- * is not enough space in the current buffer, the producer allocates
- * the new one. When the consumer processes everything in the buffer
- * queue, it calls cli_written(), tha frees all buffers (except the
- * first one) and schedules cli.event .
- *
  */
 
 #include "nest/bird.h"
@@ -68,35 +55,9 @@
 #include "conf/conf.h"
 #include "lib/string.h"
 
+#undef CLI_LOG_HOOKS
+
 pool *cli_pool;
-
-static byte *
-cli_alloc_out(cli *c, int size)
-{
-  struct cli_out *o;
-
-  if (!(o = c->tx_write) || o->wpos + size > o->end)
-    {
-      if (!o && c->tx_buf)
-	o = c->tx_buf;
-      else
-	{
-	  o = mb_alloc(c->pool, sizeof(struct cli_out) + CLI_TX_BUF_SIZE);
-	  if (c->tx_write)
-	    c->tx_write->next = o;
-	  else
-	    c->tx_buf = o;
-	  o->wpos = o->outpos = o->buf;
-	  o->end = o->buf + CLI_TX_BUF_SIZE;
-	}
-      c->tx_write = o;
-      if (!c->tx_pos)
-	c->tx_pos = o;
-      o->next = NULL;
-    }
-  o->wpos += size;
-  return o->wpos - size;
-}
 
 /**
  * cli_printf - send reply to a CLI connection
@@ -157,13 +118,15 @@ cli_printf(cli *c, int code, char *msg, ...)
     }
   size += cnt;
   buf[size++] = '\n';
-  memcpy(cli_alloc_out(c, size), buf, size);
+  if (sk_send(c->sock, buf, size) < 0)
+    longjmp(c->errbuf, 1);
 }
 
+#if CLI_LOG_HOOKS
 static void
 cli_copy_message(cli *c)
 {
-  byte *p, *q;
+  byte *p, *q, *qq;
   uint cnt = 2;
 
   if (c->ring_overflow)
@@ -171,7 +134,7 @@ cli_copy_message(cli *c)
       byte buf[64];
       int n = bsprintf(buf, "<%d messages lost>\n", c->ring_overflow);
       c->ring_overflow = 0;
-      memcpy(cli_alloc_out(c, n), buf, n);
+      sk_send(c->sock, buf, n);
     }
   p = c->ring_read;
   while (*p)
@@ -183,7 +146,7 @@ cli_copy_message(cli *c)
       ASSERT(p != c->ring_write);
     }
   c->async_msg_size += cnt;
-  q = cli_alloc_out(c, cnt);
+  q = qq = alloca(cnt);
   *q++ = '+';
   p = c->ring_read;
   do
@@ -195,45 +158,34 @@ cli_copy_message(cli *c)
   while (*q++);
   c->ring_read = p;
   q[-1] = '\n';
+  sk_send(c->sock, q, (qq-q));
 }
+#endif
 
 static void
 cli_hello(cli *c)
 {
   cli_printf(c, 1, "BIRD " BIRD_VERSION " ready.");
-  c->cont = NULL;
 }
 
-static void
-cli_free_out(cli *c)
-{
-  struct cli_out *o, *p;
+_Thread_local static byte *cli_rh_pos;
+_Thread_local static uint cli_rh_len;
+_Thread_local static int cli_rh_trick_flag;
+_Thread_local struct cli *this_cli;
 
-  if (o = c->tx_buf)
-    {
-      o->wpos = o->outpos = o->buf;
-      while (p = o->next)
-	{
-	  o->next = p->next;
-	  mb_free(p);
-	}
-    }
-  c->tx_write = c->tx_pos = NULL;
-  c->async_msg_size = 0;
-}
+/* Hack for scheduled undo notification */
+extern cli *cmd_reconfig_stored_cli;
 
 void
-cli_written(cli *c)
+cli_free(cli *c)
 {
-  cli_free_out(c);
-  ev_schedule(c->event);
+#if 0
+  cli_set_log_echo(c, 0, 0);
+#endif
+  if (c == cmd_reconfig_stored_cli)
+    cmd_reconfig_stored_cli = NULL;
+  rfree(c->pool);
 }
-
-
-static byte *cli_rh_pos;
-static uint cli_rh_len;
-static int cli_rh_trick_flag;
-struct cli *this_cli;
 
 static int
 cli_cmd_read_hook(byte *buf, uint max, UNUSED int fd)
@@ -253,20 +205,20 @@ cli_cmd_read_hook(byte *buf, uint max, UNUSED int fd)
 }
 
 static void
-cli_command(struct cli *c)
+cli_command(struct cli *c, byte *buf, uint len)
 {
   struct config f;
   int res;
 
   if (config->cli_debug > 1)
-    log(L_TRACE "CLI: %s", c->rx_buf);
+    log(L_TRACE "CLI: %s", buf);
   bzero(&f, sizeof(f));
   f.mem = c->parser_pool;
   f.pool = rp_new(c->pool, "Config");
   init_list(&f.symbols);
   cf_read_hook = cli_cmd_read_hook;
-  cli_rh_pos = c->rx_buf;
-  cli_rh_len = strlen(c->rx_buf);
+  cli_rh_pos = buf;
+  cli_rh_len = len;
   cli_rh_trick_flag = 0;
   this_cli = c;
   lp_flush(c->parser_pool);
@@ -277,59 +229,114 @@ cli_command(struct cli *c)
   config_free(&f);
 }
 
-static void
-cli_event(void *data)
+static uint
+cli_rx(sock *s, byte *buf, uint size)
 {
-  cli *c = data;
-  int err;
+  cli *c = s->data;
 
+#if CLI_LOG_HOOKS
   while (c->ring_read != c->ring_write &&
       c->async_msg_size < CLI_MAX_ASYNC_QUEUE)
     cli_copy_message(c);
+#endif
 
-  if (c->tx_pos)
-    ;
-  else if (c->cont)
-    c->cont(c);
-  else
+  byte *eol = buf;
+  byte *end = buf + size;
+  byte *nxt = NULL;
+  for (; eol < end; eol++)
+    if (eol[0] == '\n')
     {
-      err = cli_get_command(c);
-      if (!err)
-	return;
-      if (err < 0)
-	cli_printf(c, 9000, "Command too long");
-      else
-	cli_command(c);
+      nxt = eol+1;
+      break;
+    }
+    else if (eol[0] == '\r' && eol+1 < end && eol[1] == '\n')
+    {
+      nxt = eol+2;
+      break;
     }
 
-  cli_write_trigger(c);
+  this_cli = c;
+
+  if (!nxt)
+  {
+    cli_printf(c, 9000, "Command too long");
+    return size;
+  }
+  else
+  {
+    eol[0] = 0;
+    cli_command(c, buf, eol-buf);
+    return nxt - buf;
+  }
 }
 
-cli *
-cli_new(void *priv)
+static void
+cli_err(sock *s, int err)
+{
+  if (config->cli_debug)
+    {
+      if (err)
+	log(L_INFO "CLI connection dropped: %s", strerror(err));
+      else
+	log(L_INFO "CLI connection closed");
+    }
+  cli_free(s->data);
+}
+
+void
+cli_sock_info(LOCKED(event_state), sock *s, char *buf, uint len)
+{
+  AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
+  if (su->rx_hook == cli_connect)
+    bsnprintf(buf, len, "listening for incoming CLI connections");
+  else if (su->rx_hook == cli_rx)
+    bsnprintf(buf, len, "for active CLI");
+  else
+    bsnprintf(buf, len, "for CLI in some strange state");
+}
+
+static cli *
+cli_new(sock *s)
 {
   pool *p = rp_new(cli_pool, "CLI");
   cli *c = mb_alloc(p, sizeof(cli));
 
   bzero(c, sizeof(cli));
   c->pool = p;
-  c->priv = priv;
-  c->event = ev_new_init(p, cli_event, c);
-  c->cont = cli_hello;
+  c->sock = s;
   c->parser_pool = lp_new_default(c->pool);
   c->show_pool = lp_new_default(c->pool);
-  c->rx_buf = mb_alloc(c->pool, CLI_RX_BUF_SIZE);
-  ev_schedule(c->event);
   return c;
 }
 
-void
-cli_kick(cli *c)
+uint
+cli_connect(sock *s, byte *buf UNUSED, uint size UNUSED)
 {
-  if (!c->cont && !c->tx_pos)
-    ev_schedule(c->event);
+  cli *c;
+
+  if (config->cli_debug)
+    log(L_INFO "CLI connect");
+  
+  EVENT_LOCKED {
+    AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
+    su->rx_hook = cli_rx;
+    su->rx_err = cli_err;
+    su->cli_info = cli_sock_info;
+  }
+
+  s->data = c = cli_new(s);
+  s->pool = c->pool;		/* We need to have all the socket buffers allocated in the cli pool */
+
+  rmove(s, c->pool);
+  cli_hello(c);
+
+  sk_schedule_rx(s);
+
+  return 0;
 }
 
+#if CLI_LOG_HOOKS
+/* TODO: Implement a thread-safe cli-log mechanism */
 static list cli_log_hooks;
 static int cli_log_inited;
 
@@ -399,20 +406,7 @@ cli_echo(uint class, byte *msg)
 	}
     }
 }
-
-/* Hack for scheduled undo notification */
-extern cli *cmd_reconfig_stored_cli;
-
-void
-cli_free(cli *c)
-{
-  cli_set_log_echo(c, 0, 0);
-  if (c->cleanup)
-    c->cleanup(c);
-  if (c == cmd_reconfig_stored_cli)
-    cmd_reconfig_stored_cli = NULL;
-  rfree(c->pool);
-}
+#endif
 
 /**
  * cli_init - initialize the CLI module
@@ -424,6 +418,8 @@ void
 cli_init(void)
 {
   cli_pool = rp_new(&root_pool, "CLI");
+#if CLI_LOG_HOOKS
   init_list(&cli_log_hooks);
   cli_log_inited = 1;
+#endif
 }

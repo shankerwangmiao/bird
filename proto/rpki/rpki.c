@@ -262,14 +262,12 @@ rpki_cache_change_state(struct rpki_cache *cache, const enum rpki_cache_state ne
     if (cache->request_session_id)
     {
       /* Send request for Session ID */
-      if (rpki_send_reset_query(cache) != RPKI_SUCCESS)
-	rpki_cache_change_state(cache, RPKI_CS_ERROR_TRANSPORT);
+      rpki_send_reset_query(cache);
     }
     else
     {
       /* We have already a session_id. So send a Serial Query and start an incremental sync */
-      if (rpki_send_serial_query(cache) != RPKI_SUCCESS)
-	rpki_cache_change_state(cache, RPKI_CS_ERROR_TRANSPORT);
+      rpki_send_serial_query(cache);
     }
     break;
 

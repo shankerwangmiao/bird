@@ -1311,6 +1311,9 @@ translator_timer_hook(timer *timer)
 {
   struct ospf_area *oa = timer->data;
 
+  if (oa->po->p.proto_state != PS_UP)
+    return;
+
   if (oa->translate != TRANS_WAIT)
     return;
 

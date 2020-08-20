@@ -345,6 +345,7 @@ struct ospf_iface
   u16 rxbuf;			/* Buffer size */
   u16 tx_length;		/* Soft TX packet length limit, usually MTU */
   u16 tx_hdrlen;		/* Expected packet header length, less than tx_length */
+  u16 tx_bufsize;		/* Hard TX packet length limit */
   u8 check_link;		/* Whether iface link change is used */
   u8 ecmp_weight;		/* Weight used for ECMP */
   u8 link_lsa_suppression;	/* Suppression of Link-LSA origination */
@@ -509,7 +510,6 @@ struct ospf_neighbor
 #define OPT_PX_P	0x08
 #define OPT_PX_DN	0x10
 
-
 struct ospf_packet
 {
   u8 version;
@@ -668,6 +668,12 @@ struct ospf_lsa_header
   u16 length;
 };
 
+static inline uint
+ospf_iface_bufsize(struct ospf_iface *ifa)
+{
+  uint bsize = ifa->cf->rx_buffer ?: ifa->iface->mtu;
+  return MAX_(bsize, ifa->tx_length);
+}
 
 /* In OSPFv2, options are embedded in higher half of type_raw */
 static inline u8 lsa_get_options(struct ospf_lsa_header *lsa)
@@ -1011,7 +1017,6 @@ void ospf_iface_new(struct ospf_area *oa, struct ifa *addr, struct ospf_iface_pa
 void ospf_iface_new_vlink(struct ospf_proto *p, struct ospf_iface_patt *ip);
 void ospf_iface_remove(struct ospf_iface *ifa);
 void ospf_iface_shutdown(struct ospf_iface *ifa);
-int ospf_iface_assure_bufsize(struct ospf_iface *ifa, uint plen);
 int ospf_iface_reconfigure(struct ospf_iface *ifa, struct ospf_iface_patt *new);
 void ospf_reconfigure_ifaces(struct ospf_proto *p);
 void ospf_open_vlink_sk(struct ospf_proto *p);
@@ -1051,26 +1056,26 @@ static inline void ospf_neigh_lsadb_changed(struct ospf_proto *p, struct top_has
 
 /* packet.c */
 void ospf_pkt_fill_hdr(struct ospf_iface *ifa, void *buf, u8 h_type);
-int ospf_rx_hook(sock * sk, uint size);
+uint ospf_rx_hook(sock * sk, byte * buf, uint size);
 // void ospf_tx_hook(sock * sk);
 void ospf_err_hook(sock * sk, int err);
 void ospf_verr_hook(sock *sk, int err);
-void ospf_send_to(struct ospf_iface *ifa, ip_addr ip);
-void ospf_send_to_agt(struct ospf_iface *ifa, u8 state);
-void ospf_send_to_bdr(struct ospf_iface *ifa);
+void ospf_send_to(struct ospf_packet *pkt, struct ospf_iface *ifa, ip_addr ip);
+void ospf_send_to_agt(struct ospf_packet *pkt, struct ospf_iface *ifa, u8 state);
+void ospf_send_to_bdr(struct ospf_packet *pkt, struct ospf_iface *ifa);
 
 static inline uint ospf_pkt_maxsize(struct ospf_iface *ifa)
 { return ifa->tx_length - ifa->tx_hdrlen; }
 
-static inline void ospf_send_to_all(struct ospf_iface *ifa)
-{ ospf_send_to(ifa, ifa->all_routers); }
+static inline void ospf_send_to_all(struct ospf_packet *pkt, struct ospf_iface *ifa)
+{ ospf_send_to(pkt, ifa, ifa->all_routers); }
 
-static inline void ospf_send_to_des(struct ospf_iface *ifa)
+static inline void ospf_send_to_des(struct ospf_packet *pkt, struct ospf_iface *ifa)
 {
   if (ipa_nonzero(ifa->des_routers))
-    ospf_send_to(ifa, ifa->des_routers);
+    ospf_send_to(pkt, ifa, ifa->des_routers);
   else
-    ospf_send_to_bdr(ifa);
+    ospf_send_to_bdr(pkt, ifa);
 }
 
 #ifndef PARSER
@@ -1081,9 +1086,6 @@ static inline void ospf_send_to_des(struct ospf_iface *ifa)
 
 static inline uint ospf_pkt_hdrlen(struct ospf_proto *p)
 { return ospf_is_v2(p) ? (sizeof(struct ospf_packet) + sizeof(union ospf_auth2)) : sizeof(struct ospf_packet); }
-
-static inline void * ospf_tx_buffer(struct ospf_iface *ifa)
-{ return ifa->sk->tbuf; }
 
 /* hello.c */
 #define OHS_HELLO    0

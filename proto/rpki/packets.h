@@ -36,10 +36,10 @@ enum rpki_rtvals {
   RPKI_ERROR 			= -1
 };
 
-int rpki_send_serial_query(struct rpki_cache *cache);
-int rpki_send_reset_query(struct rpki_cache *cache);
-int rpki_rx_hook(sock *sk, uint size);
-void rpki_connected_hook(sock *sk);
+void rpki_send_serial_query(struct rpki_cache *cache);
+void rpki_send_reset_query(struct rpki_cache *cache);
+uint rpki_rx_hook(sock *sk, byte *buf, uint size);
+_Bool rpki_connected_hook(sock *sk);
 void rpki_err_hook(sock *sk, int size);
 
 #endif

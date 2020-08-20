@@ -33,6 +33,7 @@ struct timeloop
   BUFFER_(timer *) timers;
   btime last_time;
   btime real_time;
+  int fds[2];				/* sysdep specific data */
 };
 
 static inline uint timers_count(struct timeloop *loop)

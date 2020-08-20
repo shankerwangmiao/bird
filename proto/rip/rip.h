@@ -120,6 +120,7 @@ struct rip_iface
   u8 csn_ready;				/* Nonzero CSN can be used */
   u16 tx_plen;				/* Max TX packet data length */
   u32 csn;				/* Last used crypto sequence number */
+  uint tx_bufsize;			/* Size of TX buffer */
   ip_addr addr;				/* Destination multicast/broadcast address */
   list neigh_list;			/* List of iface neighbors (struct rip_neighbor) */
 
@@ -226,6 +227,7 @@ void rip_show_interfaces(struct proto *P, const char *iff);
 void rip_show_neighbors(struct proto *P, const char *iff);
 
 /* packets.c */
+struct rip_packet;
 void rip_send_request(struct rip_proto *p, struct rip_iface *ifa);
 void rip_send_table(struct rip_proto *p, struct rip_iface *ifa, ip_addr addr, btime changed);
 int rip_send_flush(struct rip_proto *p, struct rip_iface *ifa);

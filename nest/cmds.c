@@ -16,7 +16,6 @@
 #include "lib/resource.h"
 #include "filter/filter.h"
 
-extern int shutting_down;
 extern int configuring;
 
 void

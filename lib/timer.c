@@ -108,6 +108,8 @@ tm_new(pool *p)
   return t;
 }
 
+void pipe_kick(int fd);
+
 void
 tm_set(timer *t, btime when)
 {
@@ -131,12 +133,8 @@ tm_set(timer *t, btime when)
     t->expires = when;
     HEAP_DECREASE(loop->timers.data, tc, timer *, TIMER_LESS, TIMER_SWAP, t->index);
   }
-
-#ifdef CONFIG_BFD
-  /* Hack to notify BFD loops */
-  if ((loop != &main_timeloop) && (t->index == 1))
-    wakeup_kick_current();
-#endif
+  
+  pipe_kick(loop->fds[1]);
 }
 
 void

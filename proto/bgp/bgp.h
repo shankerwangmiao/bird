@@ -270,13 +270,13 @@ struct bgp_conn {
   timer *connect_timer;
   timer *hold_timer;
   timer *keepalive_timer;
-  event *tx_ev;
   u32 packets_to_send;			/* Bitmap of packet types to be sent */
   u32 channels_to_send;			/* Bitmap of channels with packets to be sent */
   u8 last_channel;			/* Channel used last time for TX */
   u8 last_channel_count;		/* Number of times the last channel was used in succession */
   int notify_code, notify_subcode, notify_size;
   byte *notify_data;
+  uint tbsize;				/* Size of TX buffer */
 
   uint hold_time, keepalive_time;	/* Times calculated from my and neighbor's requirements */
 };
@@ -610,9 +610,8 @@ void bgp_prepare_capabilities(struct bgp_conn *conn);
 const struct bgp_af_desc *bgp_get_af_desc(u32 afi);
 const struct bgp_af_caps *bgp_find_af_caps(struct bgp_caps *caps, u32 afi);
 void bgp_schedule_packet(struct bgp_conn *conn, struct bgp_channel *c, int type);
-void bgp_kick_tx(void *vconn);
-void bgp_tx(struct birdsock *sk);
-int bgp_rx(struct birdsock *sk, uint size);
+_Bool bgp_tx(struct birdsock *sk);
+uint bgp_rx(struct birdsock *sk, byte *buf, uint size);
 const char * bgp_error_dsc(unsigned code, unsigned subcode);
 void bgp_log_error(struct bgp_proto *p, u8 class, char *msg, unsigned code, unsigned subcode, byte *data, unsigned len);
 

@@ -72,7 +72,7 @@ CF_KEYWORDS(PASSWORD, FROM, PASSIVE, TO, ID, EVENTS, PACKETS, PROTOCOLS, INTERFA
 CF_KEYWORDS(ALGORITHM, KEYED, HMAC, MD5, SHA1, SHA256, SHA384, SHA512)
 CF_KEYWORDS(PRIMARY, STATS, COUNT, BY, FOR, COMMANDS, PREEXPORT, NOEXPORT, EXPORTED, GENERATE)
 CF_KEYWORDS(BGP, PASSWORDS, DESCRIPTION, SORTED)
-CF_KEYWORDS(RELOAD, IN, OUT, MRTDUMP, MESSAGES, RESTRICT, MEMORY, IGP_METRIC, CLASS, DSCP)
+CF_KEYWORDS(RELOAD, IN, OUT, MRTDUMP, MESSAGES, RESTRICT, MEMORY, THREADS, IGP_METRIC, CLASS, DSCP)
 CF_KEYWORDS(TIMEFORMAT, ISO, SHORT, LONG, ROUTE, PROTOCOL, BASE, LOG, S, MS, US)
 CF_KEYWORDS(GRACEFUL, RESTART, WAIT, MAX, FLUSH, AS)
 CF_KEYWORDS(CHECK, LINK)
@@ -93,7 +93,7 @@ CF_ENUM_PX(T_ENUM_AF, AF_, AFI_, IPV4, IPV6)
 %type <s> optproto
 %type <ra> r_args
 %type <sd> sym_args
-%type <i> proto_start echo_mask echo_size debug_mask debug_list debug_flag mrtdump_mask mrtdump_list mrtdump_flag export_mode limit_action net_type table_sorted tos password_algorithm
+%type <i> proto_start debug_mask debug_list debug_flag mrtdump_mask mrtdump_list mrtdump_flag export_mode limit_action net_type table_sorted tos password_algorithm /* echo_mask echo_size */
 %type <ps> proto_patt proto_patt2
 %type <cc> channel_start proto_channel
 %type <cl> limit_spec
@@ -507,6 +507,9 @@ CF_CLI(SHOW STATUS,,, [[Show router status]])
 CF_CLI(SHOW MEMORY,,, [[Show memory usage]])
 { cmd_show_memory(); } ;
 
+CF_CLI(SHOW THREADS,,, [[Show thread information]])
+{ cmd_show_threads(); } ;
+
 CF_CLI(SHOW PROTOCOLS, proto_patt2, [<protocol> | \"<pattern>\"], [[Show routing protocols]])
 { proto_apply_cmd($3, proto_cmd_show, 0, 0); } ;
 
@@ -555,6 +558,11 @@ r_args:
  | r_args TABLE ALL {
      struct rtable_config *t;
      $$ = $1;
+     if (EMPTY_LIST(config->tables))
+     {
+       ASSERT_DIE(shutting_down);
+       cf_error("All tables have been already released as we're shutting down");
+     }
      WALK_LIST(t, config->tables)
        rt_show_add_table($$, t->table);
      $$->tables_defined_by = RSD_TDB_ALL;
@@ -733,8 +741,6 @@ sym_args:
 CF_CLI_HELP(DUMP, ..., [[Dump debugging information]])
 CF_CLI(DUMP RESOURCES,,, [[Dump all allocated resource]])
 { rdump(&root_pool); cli_msg(0, ""); } ;
-CF_CLI(DUMP SOCKETS,,, [[Dump open sockets]])
-{ sk_dump_all(); cli_msg(0, ""); } ;
 CF_CLI(DUMP EVENTS,,, [[Dump event log]])
 { io_log_dump(); cli_msg(0, ""); } ;
 CF_CLI(DUMP INTERFACES,,, [[Dump interface information]])
@@ -754,6 +760,8 @@ CF_CLI(EVAL, term, <expr>, [[Evaluate an expression]])
 { cmd_eval(f_linearize($2)); } ;
 
 CF_CLI_HELP(ECHO, ..., [[Control echoing of log messages]])
+
+/*
 CF_CLI(ECHO, echo_mask echo_size, (all | off | { debug|trace|info|remote|warning|error|auth [, ...] }) [<buffer-size>], [[Control echoing of log messages]]) {
   cli_set_log_echo(this_cli, $2, $3);
   cli_msg(0, "");
@@ -766,12 +774,14 @@ echo_mask:
  ;
 
 echo_size:
-   /* empty */ { $$ = 4096; }
+   { $$ = 4096; }
  | NUM {
      if ($1 < 256 || $1 > 65536) cf_error("Invalid log buffer size");
      $$ = $1;
    }
  ;
+
+*/
 
 CF_CLI(DISABLE, proto_patt opttext, (<protocol> | \"<pattern>\" | all) [message], [[Disable protocol]])
 { proto_apply_cmd($2, proto_cmd_disable, 1, (uintptr_t) $3); } ;

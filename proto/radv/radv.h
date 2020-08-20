@@ -183,6 +183,9 @@ struct radv_iface
   btime last;			/* Time of last sending of RA */
   u16 plen;			/* Length of prepared RA in tbuf, or 0 if not valid */
   byte initial;			/* How many RAs are still to be sent as initial */
+  u8 tx_stuck:1;		/* Waiting for queue to flush */
+  u8 tx_expired:1;		/* Timer fired when TX is still stuck */
+  char buf[1024];
 };
 
 #define RA_EV_INIT 1		/* Switch to initial mode */

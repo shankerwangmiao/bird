@@ -407,9 +407,9 @@ rte_mergable(struct rte_storage *pri, struct rte_storage *sec)
 static void
 rte_trace(struct proto *p, rte *e, int dir, char *msg)
 {
-  log(L_TRACE "%s %c %s %N %s", p->name, dir, msg, e->net, rta_dest_name(e->attrs->dest));
+  log(L_TRACE "%s %c %s %N %s", p->name, dir, msg, e->net, e->attrs ? rta_dest_name(e->attrs->dest) : "?");
 #ifdef TRACE_TO_DEBUG
-  debug("%s %c %s %N %s", p->name, dir, msg, e->net, rta_dest_name(e->attrs->dest));
+  debug("%s %c %s %N %s", p->name, dir, msg, e->net, rta_dest_name(e->attrs->dest) : "?");
 #endif
 }
 

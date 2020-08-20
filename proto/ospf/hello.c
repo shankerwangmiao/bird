@@ -53,7 +53,7 @@ void
 ospf_send_hello(struct ospf_iface *ifa, int kind, struct ospf_neighbor *dirn)
 {
   struct ospf_proto *p = ifa->oa->po;
-  struct ospf_packet *pkt;
+  struct ospf_packet *pkt = alloca(ospf_pkt_maxsize(ifa));
   struct ospf_neighbor *neigh, *n1;
   struct nbma_node *nb;
   u32 *neighbors;
@@ -66,8 +66,6 @@ ospf_send_hello(struct ospf_iface *ifa, int kind, struct ospf_neighbor *dirn)
   if (ifa->stub)
     return;
 
-
-  pkt = ospf_tx_buffer(ifa);
   ospf_pkt_fill_hdr(ifa, pkt, HELLO_P);
 
   if (ospf_is_v2(p))
@@ -133,13 +131,13 @@ ospf_send_hello(struct ospf_iface *ifa, int kind, struct ospf_neighbor *dirn)
   {
   case OSPF_IT_BCAST:
   case OSPF_IT_PTP:
-    ospf_send_to_all(ifa);
+    ospf_send_to_all(pkt, ifa);
     break;
 
   case OSPF_IT_NBMA:
     if (dirn)		/* Response to received hello */
     {
-      ospf_send_to(ifa, dirn->ip);
+      ospf_send_to(pkt, ifa, dirn->ip);
       break;
     }
 
@@ -150,33 +148,33 @@ ospf_send_hello(struct ospf_iface *ifa, int kind, struct ospf_neighbor *dirn)
     {
       WALK_LIST(nb, ifa->nbma_list)
 	if (!nb->found && (to_all || (me_elig && nb->eligible)))
-	  ospf_send_to(ifa, nb->ip);
+	  ospf_send_to(pkt, ifa, nb->ip);
     }
     else			/* Hello timer */
     {
       WALK_LIST(n1, ifa->neigh_list)
 	if (to_all || (me_elig && (n1->priority > 0)) ||
 	    (n1->rid == ifa->drid) || (n1->rid == ifa->bdrid))
-	  ospf_send_to(ifa, n1->ip);
+	  ospf_send_to(pkt, ifa, n1->ip);
     }
     break;
 
   case OSPF_IT_PTMP:
     WALK_LIST(n1, ifa->neigh_list)
-      ospf_send_to(ifa, n1->ip);
+      ospf_send_to(pkt, ifa, n1->ip);
 
     WALK_LIST(nb, ifa->nbma_list)
       if (!nb->found)
-	ospf_send_to(ifa, nb->ip);
+	ospf_send_to(pkt, ifa, nb->ip);
 
     /* If there is no other target, we also send HELLO packet to the other end */
     if (ipa_nonzero(ifa->addr->opposite) && !ifa->strictnbma &&
 	EMPTY_LIST(ifa->neigh_list) && EMPTY_LIST(ifa->nbma_list))
-      ospf_send_to(ifa, ifa->addr->opposite);
+      ospf_send_to(pkt, ifa, ifa->addr->opposite);
     break;
 
   case OSPF_IT_VLINK:
-    ospf_send_to(ifa, ifa->vip);
+    ospf_send_to(pkt, ifa, ifa->vip);
     break;
 
   default:

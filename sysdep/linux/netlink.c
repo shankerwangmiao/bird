@@ -1923,8 +1923,8 @@ nl_async_msg(struct nlmsghdr *h)
     }
 }
 
-static int
-nl_async_hook(sock *sk, uint size UNUSED)
+static uint
+nl_async_hook(sock *sk, byte *buf UNUSED, uint size UNUSED)
 {
   struct iovec iov = { nl_async_rx_buffer, NL_RX_SIZE };
   struct sockaddr_nl sa;
@@ -1980,7 +1980,13 @@ nl_async_hook(sock *sk, uint size UNUSED)
 static void
 nl_async_err_hook(sock *sk, int e UNUSED)
 {
-  nl_async_hook(sk, 0);
+  nl_async_hook(sk, NULL, 0);
+}
+
+static void
+nl_async_sock_info(LOCKED(event_state) UNUSED, sock *sk UNUSED, char *buf, uint len)
+{
+  bsnprintf(buf, len, "listening to kernel route updates");
 }
 
 static void
@@ -2019,11 +2025,18 @@ nl_open_async(void)
 
   sk = nl_async_sk = sk_new(krt_pool);
   sk->type = SK_MAGIC;
-  sk->rx_hook = nl_async_hook;
-  sk->err_hook = nl_async_err_hook;
+
+  EVENT_LOCKED_INIT(sk,
+      .rx_hook = nl_async_hook,
+      .cli_info = nl_async_sock_info,
+      .rx_err = nl_async_err_hook,
+      );
+
   sk->fd = fd;
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, NULL) < 0)
     bug("Netlink: sk_open failed");
+
+  sk_schedule_rx(sk);
 }
 
 

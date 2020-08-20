@@ -10,7 +10,10 @@
 #define _BIRD_CLI_H_
 
 #include "lib/resource.h"
+#include "lib/socket.h"
 #include "lib/event.h"
+
+#include <setjmp.h>
 
 #define CLI_RX_BUF_SIZE 4096
 #define CLI_TX_BUF_SIZE 4096
@@ -19,36 +22,29 @@
 #define CLI_MSG_SIZE 500
 #define CLI_LINE_SIZE 512
 
-struct cli_out {
-  struct cli_out *next;
-  byte *wpos, *outpos, *end;
-  byte buf[0];
-};
-
 typedef struct cli {
   node n;				/* Node in list of all log hooks */
   pool *pool;
-  void *priv;				/* Private to sysdep layer */
-  byte *rx_buf, *rx_pos, *rx_aux;	/* sysdep */
-  struct cli_out *tx_buf, *tx_pos, *tx_write;
-  event *event;
-  void (*cont)(struct cli *c);
-  void (*cleanup)(struct cli *c);
-  void *rover;				/* Private to continuation routine */
+  sock *sock;				/* Socket */
   int last_reply;
   int restricted;			/* CLI is restricted to read-only commands */
   struct linpool *parser_pool;		/* Pool used during parsing */
   struct linpool *show_pool;		/* Pool used during route show */
+  jmp_buf errbuf;			/* Longjmp buffer for CLI write errors */
+#if 0
   byte *ring_buf;			/* Ring buffer for asynchronous messages */
   byte *ring_end, *ring_read, *ring_write;	/* Pointers to the ring buffer */
   uint ring_overflow;			/* Counter of ring overflows */
   uint log_mask;			/* Mask of allowed message levels */
   uint log_threshold;			/* When free < log_threshold, store only important messages */
-  uint async_msg_size;			/* Total size of async messages queued in tx_buf */
+#endif
 } cli;
 
+#define CLI_TRY(c) if (!setjmp((c)->errbuf)) {
+#define CLI_EXCEPT(c) memset(&(c)->errbuf, 0, sizeof(jmp_buf)); } else
+
 extern pool *cli_pool;
-extern struct cli *this_cli;		/* Used during parsing */
+extern _Thread_local struct cli *this_cli;		/* Used during parsing */
 
 #define CLI_ASYNC_CODE 10000
 
@@ -56,19 +52,20 @@ extern struct cli *this_cli;		/* Used during parsing */
 
 void cli_printf(cli *, int, char *, ...);
 #define cli_msg(x...) cli_printf(this_cli, x)
+#if 0
 void cli_set_log_echo(cli *, uint mask, uint size);
+#endif
 
 static inline void cli_separator(cli *c)
 { if (c->last_reply) cli_printf(c, -c->last_reply, ""); };
 
 /* Functions provided to sysdep layer */
 
-cli *cli_new(void *);
 void cli_init(void);
-void cli_free(cli *);
-void cli_kick(cli *);
-void cli_written(cli *);
+uint cli_connect(sock *s, byte *buf UNUSED, uint size UNUSED);
+#if 0
 void cli_echo(uint class, byte *msg);
+#endif
 
 static inline int cli_access_restricted(void)
 {
@@ -80,7 +77,6 @@ static inline int cli_access_restricted(void)
 
 /* Functions provided by sysdep layer */
 
-void cli_write_trigger(cli *);
 int cli_get_command(cli *);
 
 #endif

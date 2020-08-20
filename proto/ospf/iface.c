@@ -27,13 +27,25 @@ const char *ospf_it[] = { "broadcast", "nbma", "ptp", "ptmp", "virtual link" };
 static void
 poll_timer_hook(timer * timer)
 {
-  ospf_send_hello(timer->data, OHS_POLL, NULL);
+  struct ospf_iface *ifa = (struct ospf_iface *) timer->data;
+  struct ospf_proto *p = ifa->oa->po;
+
+  if (p->p.proto_state != PS_UP)
+    return;
+
+  ospf_send_hello(ifa, OHS_POLL, NULL);
 }
 
 static void
 hello_timer_hook(timer * timer)
 {
-  ospf_send_hello(timer->data, OHS_HELLO, NULL);
+  struct ospf_iface *ifa = (struct ospf_iface *) timer->data;
+  struct ospf_proto *p = ifa->oa->po;
+
+  if (p->p.proto_state != PS_UP)
+    return;
+
+  ospf_send_hello(ifa, OHS_HELLO, NULL);
 }
 
 static void
@@ -41,6 +53,9 @@ wait_timer_hook(timer * timer)
 {
   struct ospf_iface *ifa = (struct ospf_iface *) timer->data;
   struct ospf_proto *p = ifa->oa->po;
+
+  if (p->p.proto_state != PS_UP)
+    return;
 
   OSPF_TRACE(D_EVENTS, "Wait timer fired on %s", ifa->ifname);
   ospf_iface_sm(ifa, ISM_WAITF);
@@ -70,35 +85,10 @@ ifa_tx_hdrlen(struct ospf_iface *ifa)
 }
 
 static inline uint
-ifa_bufsize(struct ospf_iface *ifa)
-{
-  uint bsize = ifa->cf->rx_buffer ?: ifa->iface->mtu;
-  return MAX(bsize, ifa->tx_length);
-}
-
-static inline uint
 ifa_flood_queue_size(struct ospf_iface *ifa)
 {
   return ifa->tx_length / 24;
 }
-
-int
-ospf_iface_assure_bufsize(struct ospf_iface *ifa, uint plen)
-{
-  plen += ifa->tx_hdrlen;
-
-  if (plen <= ifa->sk->tbsize)
-    return 0;
-
-  if (ifa->cf->rx_buffer || (plen > 0xffff))
-    return -1;
-
-  plen = BIRD_ALIGN(plen, 1024);
-  plen = MIN(plen, 0xffff);
-  sk_set_tbsize(ifa->sk, plen);
-  return 1;
-}
-
 
 struct nbma_node *
 find_nbma_node_(list *nnl, ip_addr ip)
@@ -112,6 +102,12 @@ find_nbma_node_(list *nnl, ip_addr ip)
   return NULL;
 }
 
+static void
+ospf_sock_info(LOCKED(event_state) UNUSED, sock *s, char *buf, uint len)
+{
+  struct ospf_iface *ifa = s->data;
+  bsnprintf(buf, len, "listening for OSPF %s at %I%J port %d", ifa->oa->po->p.name, s->saddr, s->iface, s->dport);
+}
 
 static int
 ospf_sk_open(struct ospf_iface *ifa)
@@ -128,15 +124,21 @@ ospf_sk_open(struct ospf_iface *ifa)
 
   sk->tos = ifa->cf->tx_tos;
   sk->priority = ifa->cf->tx_priority;
-  sk->rx_hook = ospf_rx_hook;
-  // sk->tx_hook = ospf_tx_hook;
-  sk->err_hook = ospf_err_hook;
-  sk->rbsize = sk->tbsize = ifa_bufsize(ifa);
+  ifa->tx_bufsize = ospf_iface_bufsize(ifa);
+
+  EVENT_LOCKED_INIT(sk,
+      .rx_hook = ospf_rx_hook,
+      .cli_info = ospf_sock_info,
+      .rx_err = ospf_err_hook,
+      .tx_err = ospf_err_hook,
+      .rbsize = ifa->tx_bufsize
+      );
+
   sk->data = (void *) ifa;
   sk->flags = SKF_LADDR_RX | (ifa->check_ttl ? SKF_TTL_RX : 0);
   sk->ttl = ifa->cf->ttl_security ? 255 : 1;
 
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, &p->p) < 0)
     goto err;
 
   /* 12 is an offset of the checksum in an OSPFv3 packet */
@@ -169,6 +171,7 @@ ospf_sk_open(struct ospf_iface *ifa)
 
   ifa->sk = sk;
   ifa->sk_dr = 0;
+  sk_schedule_rx(sk);
   return 1;
 
  err:
@@ -213,14 +216,15 @@ ospf_open_vlink_sk(struct ospf_proto *p)
   /* FIXME: configurable tos/priority ? */
   sk->tos = IP_PREC_INTERNET_CONTROL;
   sk->priority = sk_priority_control;
-  sk->err_hook = ospf_verr_hook;
+  EVENT_LOCKED_INIT(sk,
+      .tx_err = ospf_verr_hook,
+      .rbsize = 0
+      );
 
-  sk->rbsize = 0;
-  sk->tbsize = ospf_is_v2(p) ? IP4_MIN_MTU : IP6_MIN_MTU;
   sk->data = (void *) p;
   sk->flags = 0;
 
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, &p->p) < 0)
     goto err;
 
   /* 12 is an offset of the checksum in an OSPFv3 packet */
@@ -319,6 +323,9 @@ ospf_iface_shutdown(struct ospf_iface *ifa)
 {
   if (ifa->state > OSPF_IS_DOWN)
     ospf_send_hello(ifa, OHS_SHUTDOWN, NULL);
+
+  if (ifa->sk)
+    sk_close(ifa->sk);
 }
 
 /**
@@ -710,7 +717,7 @@ ospf_iface_new_vlink(struct ospf_proto *p, struct ospf_iface_patt *ip)
   ifa->instance_id = ip->instance_id;
 
   /* This must be done after relevant fields are set */
-  ifa->tx_length = ospf_is_v2(p) ? IP4_MIN_MTU : IP6_MIN_MTU;
+  ifa->tx_bufsize = ifa->tx_length = ospf_is_v2(p) ? IP4_MIN_MTU : IP6_MIN_MTU;
   ifa->tx_hdrlen = ifa_tx_hdrlen(ifa);
 
   ifa->type = OSPF_IT_VLINK;
@@ -973,9 +980,9 @@ ospf_iface_reconfigure(struct ospf_iface *ifa, struct ospf_iface_patt *new)
   /* Buffer size depends on both tx_length and rx_buffer options */
   if (update_buffers && ifa->sk)
   {
-    uint bsize = ifa_bufsize(ifa);
+    uint bsize = ospf_iface_bufsize(ifa);
     sk_set_rbsize(ifa->sk, bsize);
-    sk_set_tbsize(ifa->sk, bsize);
+    ifa->tx_bufsize = bsize;
   }
 
   /* LINK */
@@ -1332,11 +1339,15 @@ ospf_iface_change_mtu(struct ospf_proto *p, struct ospf_iface *ifa)
     return;
 
   /* We do not shrink dynamic buffers */
-  uint bsize = ifa_bufsize(ifa);
-  if (bsize > ifa->sk->rbsize)
-    sk_set_rbsize(ifa->sk, bsize);
-  if (bsize > ifa->sk->tbsize)
-    sk_set_tbsize(ifa->sk, bsize);
+  uint bsize = ospf_iface_bufsize(ifa);
+  EVENT_LOCKED
+  {
+    AUTO_TYPE su = UNLOCKED_STRUCT(event_state, ifa->sk);
+    if (bsize > su->rbsize)
+      su->rbsize = bsize;
+  }
+  if (bsize > ifa->tx_bufsize)
+    ifa->tx_bufsize = bsize;
 
   if (!ifa->stub)
     ospf_iface_update_flood_queue_size(ifa);

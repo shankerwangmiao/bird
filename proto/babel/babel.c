@@ -113,7 +113,7 @@ babel_get_source(struct babel_proto *p, struct babel_entry *e, u64 router_id)
   if (s)
     return s;
 
-  s = sl_alloc(p->source_slab);
+  s = sl_allocz(p->source_slab);
   s->router_id = router_id;
   s->expires = current_time() + BABEL_GARBAGE_INTERVAL;
   s->seqno = 0;
@@ -159,8 +159,7 @@ babel_get_route(struct babel_proto *p, struct babel_entry *e, struct babel_neigh
   if (r)
     return r;
 
-  r = sl_alloc(p->route_slab);
-  memset(r, 0, sizeof(*r));
+  r = sl_allocz(p->route_slab);
 
   r->e = e;
   r->neigh = nbr;
@@ -323,7 +322,7 @@ babel_add_seqno_request(struct babel_proto *p, struct babel_entry *e,
     }
 
   /* No entries found */
-  sr = sl_alloc(p->seqno_slab);
+  sr = sl_allocz(p->seqno_slab);
 
 found:
   sr->router_id = router_id;
@@ -1572,7 +1571,6 @@ babel_iface_update_buffers(struct babel_iface *ifa)
   rbsize = MAX(rbsize, tbsize);
 
   sk_set_rbsize(ifa->sk, rbsize);
-  sk_set_tbsize(ifa->sk, tbsize);
 
   ifa->tx_length = tbsize - BABEL_OVERHEAD;
 }
@@ -1637,7 +1635,6 @@ babel_add_iface(struct babel_proto *p, struct iface *new, struct babel_iface_con
   ifa->timer = tm_new_init(ifa->pool, babel_iface_timer, ifa, 0, 0);
 
   init_list(&ifa->msg_queue);
-  ifa->send_event = ev_new_init(ifa->pool, babel_send_queue, ifa);
 
   struct object_lock *lock = olock_new(ifa->pool);
   lock->type = OBJLOCK_UDP;
@@ -2278,6 +2275,10 @@ babel_shutdown(struct proto *P)
 
   WALK_LIST(ifa, p->interfaces)
     babel_iface_shutdown(ifa);
+
+  WALK_LIST(ifa, p->interfaces)
+    if (ifa->sk)
+      sk_close(ifa->sk);
 
   return PS_DOWN;
 }

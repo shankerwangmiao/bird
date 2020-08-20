@@ -1014,6 +1014,7 @@ krt_sock_open(pool *pool, void *data, int table_id UNUSED)
   if (sk_open(sk) < 0)
     bug("krt-sock: sk_open failed");
 
+  sk_schedule(sk, 1, 0);
   return sk;
 }
 

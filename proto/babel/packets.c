@@ -1177,14 +1177,13 @@ babel_write_tlv(struct babel_tlv *hdr,
  */
 
 static int
-babel_send_to(struct babel_iface *ifa, ip_addr dest)
+babel_send_to(struct babel_pkt_header *hdr, struct babel_iface *ifa, ip_addr dest)
 {
   sock *sk = ifa->sk;
-  struct babel_pkt_header *hdr = (void *) sk->tbuf;
   int len = get_u16(&hdr->length) + sizeof(struct babel_pkt_header);
 
   DBG("Babel: Sending %d bytes to %I\n", len, dest);
-  return sk_send_to(sk, len, dest, 0);
+  return sk_send_to(sk, hdr, len, dest, 0);
 }
 
 /**
@@ -1202,7 +1201,7 @@ babel_send_to(struct babel_iface *ifa, ip_addr dest)
  * The TLVs in the queue are freed after they are written to the buffer.
  */
 static uint
-babel_write_queue(struct babel_iface *ifa, list *queue)
+babel_write_queue(struct babel_pkt_header *pkt, struct babel_iface *ifa, list *queue)
 {
   struct babel_proto *p = ifa->proto;
   struct babel_write_state state = { .next_hop_ip6 = ifa->addr };
@@ -1210,14 +1209,12 @@ babel_write_queue(struct babel_iface *ifa, list *queue)
   if (EMPTY_LIST(*queue))
     return 0;
 
-  byte *pos = ifa->sk->tbuf;
-  byte *end = pos + ifa->tx_length;
-
-  struct babel_pkt_header *pkt = (void *) pos;
   pkt->magic = BABEL_MAGIC;
   pkt->version = BABEL_VERSION;
   pkt->length = 0;
-  pos += sizeof(struct babel_pkt_header);
+
+  byte *pos = ((void *) pkt) + sizeof(struct babel_pkt_header);
+  byte *end = ((void *) pkt) + ifa->tx_length;
 
   struct babel_msg_node *msg;
   WALK_LIST_FIRST(msg, *queue)
@@ -1242,23 +1239,18 @@ babel_write_queue(struct babel_iface *ifa, list *queue)
 }
 
 void
-babel_send_queue(void *arg)
+babel_send_queue(struct babel_iface *ifa)
 {
-  struct babel_iface *ifa = arg;
-  while ((babel_write_queue(ifa, &ifa->msg_queue) > 0) &&
-	 (babel_send_to(ifa, IP6_BABEL_ROUTERS) > 0));
+  struct babel_pkt_header *buf = alloca(ifa->tx_length);
+  while ((babel_write_queue(buf, ifa, &ifa->msg_queue) > 0) &&
+	 (babel_send_to(buf, ifa, IP6_BABEL_ROUTERS) > 0));
 }
 
 static inline void
 babel_kick_queue(struct babel_iface *ifa)
 {
-  /*
-   * Only schedule send event if there is not already data in the socket buffer.
-   * Otherwise we may overwrite the data already in the buffer.
-   */
-
-  if ((ifa->sk->tpos == ifa->sk->tbuf) && !ev_active(ifa->send_event))
-    ev_schedule(ifa->send_event);
+  /* Schedule TX on the interface socket */
+  sk_schedule_tx(ifa->sk);
 }
 
 /**
@@ -1275,18 +1267,15 @@ void
 babel_send_unicast(union babel_msg *msg, struct babel_iface *ifa, ip_addr dest)
 {
   struct babel_proto *p = ifa->proto;
-  struct babel_msg_node *msgn = sl_alloc(p->msg_slab);
+  struct babel_msg_node *msgn = sl_allocz(p->msg_slab);
   list queue;
 
   msgn->msg = *msg;
   init_list(&queue);
   add_tail(&queue, NODE msgn);
-  babel_write_queue(ifa, &queue);
-  babel_send_to(ifa, dest);
-
-  /* We could overwrite waiting packet here, we may have to kick TX queue */
-  if (!EMPTY_LIST(ifa->msg_queue))
-    babel_kick_queue(ifa);
+  struct babel_pkt_header *buf = alloca(ifa->tx_length);
+  babel_write_queue(buf, ifa, &queue);
+  babel_send_to(buf, ifa, dest);
 }
 
 /**
@@ -1304,7 +1293,7 @@ void
 babel_enqueue(union babel_msg *msg, struct babel_iface *ifa)
 {
   struct babel_proto *p = ifa->proto;
-  struct babel_msg_node *msgn = sl_alloc(p->msg_slab);
+  struct babel_msg_node *msgn = sl_allocz(p->msg_slab);
   msgn->msg = *msg;
   add_tail(&ifa->msg_queue, NODE msgn);
   babel_kick_queue(ifa);
@@ -1386,7 +1375,7 @@ babel_process_packet(struct babel_pkt_header *pkt, int len,
       break;
     }
 
-    msg = sl_alloc(p->msg_slab);
+    msg = sl_allocz(p->msg_slab);
     res = babel_read_tlv(tlv, &msg->msg, &state);
     if (res == PARSE_SUCCESS)
     {
@@ -1427,7 +1416,7 @@ babel_err_hook(sock *sk, int err)
 }
 
 
-static void
+static _Bool
 babel_tx_hook(sock *sk)
 {
   struct babel_iface *ifa = sk->data;
@@ -1436,11 +1425,13 @@ babel_tx_hook(sock *sk)
       sk->iface->name, sk->saddr, sk->daddr);
 
   babel_send_queue(ifa);
+
+  return 0;
 }
 
 
-static int
-babel_rx_hook(sock *sk, uint len)
+static uint
+babel_rx_hook(sock *sk, byte *buf, uint len)
 {
   struct babel_iface *ifa = sk->data;
   struct babel_proto *p = ifa->proto;
@@ -1448,14 +1439,14 @@ babel_rx_hook(sock *sk, uint len)
   uint err_val = 0;
 
   if (sk->lifindex != ifa->iface->index)
-    return 1;
+    return 0;
 
   DBG("Babel: RX hook called (iface %s, src %I, dst %I)\n",
       sk->iface->name, sk->faddr, sk->laddr);
 
   /* Silently ignore my own packets */
   if (ipa_equal(sk->faddr, sk->saddr))
-    return 1;
+    return 0;
 
   if (!ipa_is_link_local(sk->faddr))
     DROP1("wrong src address");
@@ -1469,13 +1460,20 @@ babel_rx_hook(sock *sk, uint len)
   if (sk->flags & SKF_TRUNCATED)
     DROP("truncated", len);
 
-  babel_process_packet((struct babel_pkt_header *) sk->rbuf, len, sk->faddr, ifa);
-  return 1;
+  babel_process_packet((struct babel_pkt_header *) buf, len, sk->faddr, ifa);
+  return 0;
 
 drop:
   LOG_PKT("Bad packet from %I via %s - %s (%u)",
 	  sk->faddr, sk->iface->name, err_dsc, err_val);
-  return 1;
+  return 0;
+}
+
+static void
+babel_sock_info(UNUSED LOCKED(event_state), struct birdsock *sk, char *buf, uint len)
+{
+  bsnprintf(buf, len, "for Babel %s at %I%J sport %d dport %d",
+      sk->owner->name, sk->saddr, sk->iface, sk->sport, sk->dport);
 }
 
 int
@@ -1492,9 +1490,14 @@ babel_open_socket(struct babel_iface *ifa)
   sk->saddr = ifa->addr;
   sk->vrf = p->p.vrf;
 
-  sk->rx_hook = babel_rx_hook;
-  sk->tx_hook = babel_tx_hook;
-  sk->err_hook = babel_err_hook;
+  EVENT_LOCKED_INIT(sk, 
+      .rx_hook = babel_rx_hook,
+      .tx_hook = babel_tx_hook,
+      .rx_err = babel_err_hook,
+      .tx_err = babel_err_hook,
+      .cli_info = babel_sock_info,
+      );
+
   sk->data = ifa;
 
   sk->tos = ifa->cf->tx_tos;
@@ -1502,7 +1505,7 @@ babel_open_socket(struct babel_iface *ifa)
   sk->ttl = 1;
   sk->flags = SKF_LADDR_RX;
 
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, &p->p) < 0)
     goto err;
 
   if (sk_setup_multicast(sk) < 0)
@@ -1510,6 +1513,8 @@ babel_open_socket(struct babel_iface *ifa)
 
   if (sk_join_group(sk, IP6_BABEL_ROUTERS) < 0)
     goto err;
+
+  sk_schedule_rx(sk);
 
   ifa->sk = sk;
   return 1;

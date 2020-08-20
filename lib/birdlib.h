@@ -76,6 +76,9 @@ static inline int u64_cmp(u64 i1, u64 i2)
 #define NONNULL(...) __attribute__((nonnull (__VA_ARGS__)))
 #define USE_RESULT __attribute__((warn_unused_result))
 
+/* Automatic type derived from the expression assigned */
+#define AUTO_TYPE __auto_type
+
 /* Microsecond time */
 
 typedef s64 btime;

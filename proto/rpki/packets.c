@@ -233,7 +233,7 @@ static const size_t min_pdu_size[] = {
   [ERROR] 			= 16,
 };
 
-static int rpki_send_error_pdu(struct rpki_cache *cache, const enum pdu_error_type error_code, const u32 err_pdu_len, const struct pdu_header *erroneous_pdu, const char *fmt, ...);
+static void rpki_send_error_pdu(struct rpki_cache *cache, const enum pdu_error_type error_code, const u32 err_pdu_len, const struct pdu_header *erroneous_pdu, const char *fmt, ...);
 
 static void
 rpki_pdu_to_network_byte_order(struct pdu_header *pdu)
@@ -488,35 +488,19 @@ rpki_log_packet(struct rpki_cache *cache, const struct pdu_header *pdu, const en
 #endif
 }
 
-static int
-rpki_send_pdu(struct rpki_cache *cache, const void *pdu, const uint len)
+static void
+rpki_send_pdu(struct rpki_cache *cache, void *pdu, const uint len)
 {
-  struct rpki_proto *p = cache->p;
   sock *sk = cache->tr_sock->sk;
 
   rpki_log_packet(cache, pdu, RPKI_SEND);
 
-  if (sk->tbuf != sk->tpos)
-  {
-    RPKI_WARN(p, "Old packet overwritten in TX buffer");
-  }
+  ASSERT(len <= RPKI_TX_BUFFER_SIZE);
 
-  if (len > sk->tbsize)
-  {
-    RPKI_WARN(p, "%u bytes is too much for send", len);
-    ASSERT(0);
-    return RPKI_ERROR;
-  }
+  rpki_pdu_to_network_byte_order(pdu);
 
-  memcpy(sk->tbuf, pdu, len);
-  rpki_pdu_to_network_byte_order((void *) sk->tbuf);
-
-  if (!sk_send(sk, len))
-  {
+  if (!sk_send(sk, pdu, len))
     DBG("Cannot send just the whole data. It will be sent using a call of tx_hook()");
-  }
-
-  return RPKI_SUCCESS;
 }
 
 /**
@@ -881,13 +865,13 @@ rpki_rx_packet(struct rpki_cache *cache, struct pdu_header *pdu)
   };
 }
 
-int
-rpki_rx_hook(struct birdsock *sk, uint size)
+uint
+rpki_rx_hook(struct birdsock *sk, byte *buf, uint size)
 {
   struct rpki_cache *cache = sk->data;
   struct rpki_proto *p = cache->p;
 
-  byte *pkt_start = sk->rbuf;
+  byte *pkt_start = buf;
   byte *end = pkt_start + size;
 
   DBG("rx hook got %u bytes \n", size);
@@ -915,14 +899,7 @@ rpki_rx_hook(struct birdsock *sk, uint size)
     pkt_start += pdu_size;
   }
 
-  if (pkt_start != sk->rbuf)
-  {
-    CACHE_DBG(cache, "Move %u bytes of a memory at the start of buffer", end - pkt_start);
-    memmove(sk->rbuf, pkt_start, end - pkt_start);
-    sk->rpos = sk->rbuf + (end - pkt_start);
-  }
-
-  return 0; /* Not purge sk->rbuf */
+  return pkt_start - buf;
 }
 
 void
@@ -947,26 +924,7 @@ rpki_err_hook(struct birdsock *sk, int error_num)
   rpki_cache_change_state(cache, RPKI_CS_ERROR_TRANSPORT);
 }
 
-static int
-rpki_fire_tx(struct rpki_cache *cache)
-{
-  sock *sk = cache->tr_sock->sk;
-
-  uint bytes_to_send = sk->tpos - sk->tbuf;
-  DBG("Sending %u bytes", bytes_to_send);
-  return sk_send(sk, bytes_to_send);
-}
-
-void
-rpki_tx_hook(sock *sk)
-{
-  struct rpki_cache *cache = sk->data;
-
-  while (rpki_fire_tx(cache) > 0)
-    ;
-}
-
-void
+_Bool
 rpki_connected_hook(sock *sk)
 {
   struct rpki_cache *cache = sk->data;
@@ -974,10 +932,12 @@ rpki_connected_hook(sock *sk)
   CACHE_TRACE(D_EVENTS, cache, "Connected");
   proto_notify_state(&cache->p->p, PS_UP);
 
-  sk->rx_hook = rpki_rx_hook;
-  sk->tx_hook = rpki_tx_hook;
+  EVENT_LOCKED_SET(sk, rx_hook, rpki_rx_hook);
 
   rpki_cache_change_state(cache, RPKI_CS_SYNC_START);
+  sk_schedule_rx(sk);
+
+  return 0;
 }
 
 /**
@@ -991,7 +951,7 @@ rpki_connected_hook(sock *sk)
  *
  * This function prepares Error PDU and sends it to a cache server.
  */
-static int
+static void
 rpki_send_error_pdu(struct rpki_cache *cache, const enum pdu_error_type error_code, const u32 err_pdu_len, const struct pdu_header *erroneous_pdu, const char *fmt, ...)
 {
   va_list args;
@@ -1001,11 +961,8 @@ rpki_send_error_pdu(struct rpki_cache *cache, const enum pdu_error_type error_co
   int msg_len = 0;
 
   /* Don't send errors for erroneous error PDUs */
-  if (err_pdu_len >= 2)
-  {
-    if (erroneous_pdu->type == ERROR)
-      return RPKI_SUCCESS;
-  }
+  if ((err_pdu_len >= 2) && (erroneous_pdu->type == ERROR))
+    return;
 
   if (fmt)
   {
@@ -1032,10 +989,10 @@ rpki_send_error_pdu(struct rpki_cache *cache, const enum pdu_error_type error_co
   if (msg_len > 0)
     memcpy(e->rest + err_pdu_len + 4, msg, msg_len);
 
-  return rpki_send_pdu(cache, pdu, pdu_size);
+  rpki_send_pdu(cache, pdu, pdu_size);
 }
 
-int
+void
 rpki_send_serial_query(struct rpki_cache *cache)
 {
   struct pdu_serial_query pdu = {
@@ -1046,16 +1003,10 @@ rpki_send_serial_query(struct rpki_cache *cache)
     .serial_num = cache->serial_num
   };
 
-  if (rpki_send_pdu(cache, &pdu, sizeof(pdu)) != RPKI_SUCCESS)
-  {
-    rpki_cache_change_state(cache, RPKI_CS_ERROR_TRANSPORT);
-    return RPKI_ERROR;
-  }
-
-  return RPKI_SUCCESS;
+  rpki_send_pdu(cache, &pdu, sizeof(pdu));
 }
 
-int
+void
 rpki_send_reset_query(struct rpki_cache *cache)
 {
   struct pdu_reset_query pdu = {
@@ -1064,11 +1015,5 @@ rpki_send_reset_query(struct rpki_cache *cache)
     .len = sizeof(pdu),
   };
 
-  if (rpki_send_pdu(cache, &pdu, sizeof(pdu)) != RPKI_SUCCESS)
-  {
-    rpki_cache_change_state(cache, RPKI_CS_ERROR_TRANSPORT);
-    return RPKI_ERROR;
-  }
-
-  return RPKI_SUCCESS;
+  rpki_send_pdu(cache, &pdu, sizeof(pdu));
 }

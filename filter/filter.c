@@ -92,17 +92,6 @@ struct filter_state {
 };
 
 static _Thread_local struct filter_state filter_state;
-static _Thread_local struct filter_stack *filter_stack = NULL;
-
-static struct filter_stack *get_filter_stack(void)
-{
-  if (filter_stack)
-    return filter_stack;
-
-  filter_stack = ev_alloc(sizeof(struct filter_stack));
-
-  return filter_stack;
-}
 
 void (*bt_assert_hook)(int result, const struct f_line_item *assert);
 
@@ -254,7 +243,7 @@ f_run(const struct filter *filter, struct rte *rte, struct linpool *tmp_pool, in
 
   /* Initialize the filter state */
   filter_state = (struct filter_state) {
-    .stack = get_filter_stack(),
+    .stack = alloca(sizeof(struct filter_stack)),
     .rte = rte,
     .pool = tmp_pool,
     .flags = flags,
@@ -292,7 +281,7 @@ enum filter_return
 f_eval_rte(const struct f_line *expr, struct rte *rte, struct linpool *tmp_pool)
 {
   filter_state = (struct filter_state) {
-    .stack = get_filter_stack(),
+    .stack = alloca(sizeof(struct filter_stack)),
     .rte = rte,
     .pool = tmp_pool,
   };
@@ -314,7 +303,7 @@ enum filter_return
 f_eval(const struct f_line *expr, struct linpool *tmp_pool, struct f_val *pres)
 {
   filter_state = (struct filter_state) {
-    .stack = get_filter_stack(),
+    .stack = alloca(sizeof(struct filter_stack)),
     .pool = tmp_pool,
   };
 
@@ -334,7 +323,7 @@ f_eval_int(const struct f_line *expr)
 {
   /* Called independently in parse-time to eval expressions */
   filter_state = (struct filter_state) {
-    .stack = get_filter_stack(),
+    .stack = alloca(sizeof(struct filter_stack)),
     .pool = cfg_mem,
   };
 

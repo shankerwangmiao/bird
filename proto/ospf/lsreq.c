@@ -55,14 +55,13 @@ ospf_send_lsreq(struct ospf_proto *p, struct ospf_neighbor *n)
   struct ospf_iface *ifa = n->ifa;
   struct ospf_lsreq_header *lsrs;
   struct top_hash_entry *req;
-  struct ospf_packet *pkt;
+  struct ospf_packet *pkt = alloca(ospf_pkt_maxsize(ifa));
   uint i, lsr_max, length;
 
   /* RFC 2328 10.9 */
 
   /* ASSERT((n->state >= NEIGHBOR_EXCHANGE) && !EMPTY_SLIST(n->lsrql)); */
 
-  pkt = ospf_tx_buffer(ifa);
   ospf_pkt_fill_hdr(ifa, pkt, LSREQ_P);
   ospf_lsreq_body(p, pkt, &lsrs, &lsr_max);
 
@@ -89,7 +88,7 @@ ospf_send_lsreq(struct ospf_proto *p, struct ospf_neighbor *n)
   pkt->length = htons(length);
 
   OSPF_PACKET(ospf_dump_lsreq, pkt, "LSREQ packet sent to nbr %R on %s", n->rid, ifa->ifname);
-  ospf_send_to(ifa, n->ip);
+  ospf_send_to(pkt, ifa, n->ip);
 }
 
 

@@ -119,9 +119,7 @@ rip_send_ack(struct rip_proto *p, struct rip_iface *ifa, uint flush, uint seqnum
 #define LOG_RTE(msg, args...) \
   log_rl(&p->log_rte_tbf, L_REMOTE "%s: " msg, p->p.name, args)
 
-
-static inline void * rip_tx_buffer(struct rip_iface *ifa)
-{ return ifa->sk->tbuf; }
+#define rip_tx_buffer(ifa)  alloca((ifa)->tx_bufsize)
 
 static inline uint
 rip_pkt_hdrlen(struct rip_iface *ifa)
@@ -429,7 +427,7 @@ rip_send_to(struct rip_proto *p, struct rip_iface *ifa, struct rip_packet *pkt, 
   if (ifa->cf->auth_type)
     rip_fill_authentication(p, ifa, pkt, &plen);
 
-  return sk_send_to(ifa->sk, plen, dst, 0);
+  return sk_send_to(ifa->sk, pkt, plen, dst, 0);
 }
 
 static inline void
@@ -664,7 +662,7 @@ rip_send_table(struct rip_proto *p, struct rip_iface *ifa, ip_addr addr, btime c
     ;
 }
 
-static void
+static _Bool
 rip_tx_hook(sock *sk)
 {
   struct rip_iface *ifa = sk->data;
@@ -675,6 +673,8 @@ rip_tx_hook(sock *sk)
 
   while (rip_send_response(p, ifa) > 0)
     ;
+
+  return 0;
 }
 
 static void
@@ -878,8 +878,8 @@ rip_rxmt_timeout(timer *t)
 }
 
 
-static int
-rip_rx_hook(sock *sk, uint len)
+static uint
+rip_rx_hook(sock *sk, byte *buf, uint len)
 {
   struct rip_iface *ifa = sk->data;
   struct rip_proto *p = ifa->rip;
@@ -916,7 +916,7 @@ rip_rx_hook(sock *sk, uint len)
   if (sk->flags & SKF_TRUNCATED)
     DROP("truncated", len);
 
-  struct rip_packet *pkt = (struct rip_packet *) sk->rbuf;
+  struct rip_packet *pkt = (void *) buf;
   uint pkt_len = len;
   uint hdr_len = sizeof(struct rip_packet);
   uint update_msg = 0;
@@ -1000,9 +1000,13 @@ rip_open_socket(struct rip_iface *ifa)
   sk->saddr = rip_is_v2(p) ? ifa->iface->addr4->ip : ifa->iface->llv6->ip;
   sk->vrf = p->p.vrf;
 
-  sk->rx_hook = rip_rx_hook;
-  sk->tx_hook = rip_tx_hook;
-  sk->err_hook = rip_err_hook;
+  EVENT_LOCKED_INIT(sk,
+      .rx_hook = rip_rx_hook,
+      .tx_hook = rip_tx_hook,
+      .rx_err = rip_err_hook,
+      .tx_err = rip_err_hook,
+      );
+
   sk->data = ifa;
 
   sk->tos = ifa->cf->tx_tos;
@@ -1012,7 +1016,7 @@ rip_open_socket(struct rip_iface *ifa)
 
   /* sk->rbsize and sk->tbsize are handled in rip_iface_update_buffers() */
 
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, &p->p) < 0)
     goto err;
 
   if (ifa->cf->mode == RIP_IM_MULTICAST)
@@ -1036,6 +1040,7 @@ rip_open_socket(struct rip_iface *ifa)
   }
 
   ifa->sk = sk;
+  sk_schedule_rx(sk);
   return 1;
 
 err:

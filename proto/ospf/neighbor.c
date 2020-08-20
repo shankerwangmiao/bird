@@ -437,6 +437,9 @@ graceful_restart_timeout(timer *t)
   struct ospf_neighbor *n = t->data;
   struct ospf_proto *p = n->ifa->oa->po;
 
+  if (p->p.proto_state != PS_UP)
+    return;
+
   OSPF_TRACE(D_EVENTS, "Graceful restart timer expired for nbr %R on %s",
 	     n->rid, n->ifa->ifname);
 
@@ -750,6 +753,9 @@ inactivity_timer_hook(timer * timer)
   struct ospf_neighbor *n = (struct ospf_neighbor *) timer->data;
   struct ospf_proto *p = n->ifa->oa->po;
 
+  if (p->p.proto_state != PS_UP)
+    return;
+
   OSPF_TRACE(D_EVENTS, "Inactivity timer expired for nbr %R on %s",
 	     n->rid, n->ifa->ifname);
   ospf_neigh_sm(n, INM_INACTTIM);
@@ -760,6 +766,9 @@ ospf_neigh_bfd_hook(struct bfd_request *req)
 {
   struct ospf_neighbor *n = req->data;
   struct ospf_proto *p = n->ifa->oa->po;
+
+  if (p->p.proto_state != PS_UP)
+    return;
 
   if (req->down)
   {
@@ -793,6 +802,9 @@ dbdes_timer_hook(timer *t)
   struct ospf_neighbor *n = t->data;
   struct ospf_proto *p = n->ifa->oa->po;
 
+  if (p->p.proto_state != PS_UP)
+    return;
+
   // OSPF_TRACE(D_EVENTS, "DBDES timer expired for nbr %R on %s", n->rid, n->ifa->ifname);
 
   if (n->state == NEIGHBOR_EXSTART)
@@ -814,6 +826,9 @@ lsrq_timer_hook(timer *t)
   struct ospf_neighbor *n = t->data;
   struct ospf_proto *p = n->ifa->oa->po;
 
+  if (p->p.proto_state != PS_UP)
+    return;
+
   // OSPF_TRACE(D_EVENTS, "LSRQ timer expired for nbr %R on %s", n->rid, n->ifa->ifname);
 
   if ((n->state >= NEIGHBOR_EXCHANGE) && !EMPTY_SLIST(n->lsrql))
@@ -826,6 +841,9 @@ lsrt_timer_hook(timer *t)
   struct ospf_neighbor *n = t->data;
   struct ospf_proto *p = n->ifa->oa->po;
 
+  if (p->p.proto_state != PS_UP)
+    return;
+
   // OSPF_TRACE(D_EVENTS, "LSRT timer expired for nbr %R on %s", n->rid, n->ifa->ifname);
 
   if ((n->state >= NEIGHBOR_EXCHANGE) && !EMPTY_SLIST(n->lsrtl))
@@ -837,6 +855,9 @@ ackd_timer_hook(timer *t)
 {
   struct ospf_neighbor *n = t->data;
   struct ospf_proto *p = n->ifa->oa->po;
+
+  if (p->p.proto_state != PS_UP)
+    return;
 
   ospf_send_lsack(p, n, ACKL_DELAY);
 }

@@ -133,6 +133,28 @@ insert_node(node *n, node *after)
 }
 
 /**
+ * replace_node - replace a node by another in a list
+ * @old: an old list node
+ * @new: the new list node
+ *
+ * Removes the @old node and puts @new on its place
+ */
+LIST_INLINE void
+replace_node(node *old, node *new)
+{
+  ASSUME(old->prev);
+  ASSUME(old->next);
+  ASSUME(new->prev == NULL);
+  ASSUME(new->next == NULL);
+
+  new->prev = old->prev;
+  new->next = old->next;
+  
+  new->prev->next = new->next->prev = new;
+  old->prev = old->next = NULL;
+}
+
+/**
  * rem_node - remove a node from a list
  * @n: node to be removed
  *

@@ -199,9 +199,8 @@ rt_show_net(struct cli *c, net *n, struct rt_show_data *d)
 }
 
 static void
-rt_show_cleanup(struct cli *c)
+rt_show_cleanup(struct rt_show_data *d)
 {
-  struct rt_show_data *d = c->rover;
   struct rt_show_data_rtable *tab;
 
   /* Unlink the iterator */
@@ -213,15 +212,15 @@ rt_show_cleanup(struct cli *c)
     rt_unlock_table(tab->table);
 }
 
-static void
-rt_show_cont(struct cli *c)
+static _Bool
+rt_show_cont(struct rt_show_data *d)
 {
-  struct rt_show_data *d = c->rover;
 #ifdef DEBUGGING
   unsigned max = 4;
 #else
   unsigned max = 64;
 #endif
+  struct cli *c = this_cli;
   struct fib *fib = &d->tab->table->fib;
   struct fib_iterator *it = &d->fit;
 
@@ -251,7 +250,7 @@ rt_show_cont(struct cli *c)
     if (!max--)
     {
       FIB_ITERATE_PUT(it);
-      return;
+      return 1;
     }
     rt_show_net(c, n, d);
   }
@@ -272,7 +271,7 @@ rt_show_cont(struct cli *c)
   d->tab = NODE_NEXT(d->tab);
 
   if (NODE_VALID(d->tab))
-    return;
+    return 1;
 
   if (d->stats && (d->table_counter > 1))
   {
@@ -284,8 +283,8 @@ rt_show_cont(struct cli *c)
     cli_printf(c, 0, "");
 
 done:
-  rt_show_cleanup(c);
-  c->cont = c->cleanup = NULL;
+  rt_show_cleanup(d);
+  return 0;
 }
 
 struct rt_show_data_rtable *
@@ -402,9 +401,16 @@ rt_show(struct rt_show_data *d)
 
     /* There is at least one table */
     d->tab = HEAD(d->tables);
-    this_cli->cont = rt_show_cont;
-    this_cli->cleanup = rt_show_cleanup;
-    this_cli->rover = d;
+    CLI_TRY(this_cli) {
+      while (rt_show_cont(d))
+      {
+	the_bird_unlock();
+	the_bird_lock();
+      }
+
+    } CLI_EXCEPT(this_cli) {
+      rt_show_cleanup(d);
+    }
   }
   else
   {

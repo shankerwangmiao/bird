@@ -28,9 +28,7 @@ static void
 ev_free(resource *r)
 {
   event *e = (event *) r;
-
-  if (ev_active(e))
-    ev_cancel(e);
+  ev_cancel(e);
 }
 
 static void ev_dump_res(resource *r)
@@ -59,7 +57,6 @@ event *
 ev_new(pool *p)
 {
   event *e = ralloc(p, &ev_class);
-  e->timeloop = timeloop_current;
-  e->coro = NULL;
+  memset(((void *) e) + sizeof(resource), 0, sizeof(event) - sizeof(resource));
   return e;
 }

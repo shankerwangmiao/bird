@@ -44,7 +44,9 @@ static inline void log_unlock(void) { pthread_mutex_unlock(&log_mutex); }
 
 static pthread_t main_thread;
 void main_thread_init(void) { main_thread = pthread_self(); }
+#if CLI_LOG_HOOKS
 static int main_thread_self(void) { return pthread_equal(pthread_self(), main_thread); }
+#endif
 
 
 #ifdef HAVE_SYSLOG_H
@@ -191,9 +193,11 @@ log_commit(int class, buffer *buf)
     }
   log_unlock();
 
+#if CLI_LOG_HOOKS
   /* cli_echo is not thread-safe, so call it just from the main thread */
   if (main_thread_self())
     cli_echo(class, buf->start);
+#endif
 
   buf->pos = buf->start;
 }
@@ -299,7 +303,7 @@ void
 debug(const char *msg, ...)
 {
 #define DEBUG_BUFSIZE_MAX       65536
-#define DEBUG_BUFSIZE_INIT	256
+#define DEBUG_BUFSIZE_INIT	1024
   va_list args;
   static _Thread_local uint bufsize = DEBUG_BUFSIZE_INIT;
   static _Thread_local char buf_init[DEBUG_BUFSIZE_INIT];
@@ -315,9 +319,9 @@ debug(const char *msg, ...)
         if (bufsize >= DEBUG_BUFSIZE_MAX)
           bug("Extremely long debug output, split it.");
 	else if (buf == buf_init)
-	  buf = ev_alloc(bufsize *= 2);
+	  buf = xmalloc(bufsize *= 2);
         else
-          buf = ev_realloc(buf, (bufsize *= 2));
+          buf = xrealloc(buf, (bufsize *= 2));
 
       fputs(buf, dbgf);
     }

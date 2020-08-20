@@ -174,6 +174,9 @@ struct proto {
   u32 debug;				/* Debugging flags */
   u32 mrtdump;				/* MRTDump flags */
   uint active_channels;			/* Number of active channels */
+  LOCKED_STRUCT(event_state,
+      uint active_sockets;			/* Number of open sockets */
+      );
   byte net_type;			/* Protocol network type (NET_*), 0 for undefined */
   byte disabled;			/* Manually disabled */
   byte vrf_set;				/* Related VRF instance (above) is defined */

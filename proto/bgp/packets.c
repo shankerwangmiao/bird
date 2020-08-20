@@ -8,7 +8,8 @@
  *	Can be freely distributed and used under the terms of the GNU GPL.
  */
 
-#undef LOCAL_DEBUG
+//#undef LOCAL_DEBUG
+#define LOCAL_DEBUG
 
 #include <stdlib.h>
 
@@ -2701,10 +2702,9 @@ found:
 }
 
 static inline int
-bgp_send(struct bgp_conn *conn, uint type, uint len)
+bgp_send(struct bgp_conn *conn, uint type, byte *buf, uint len)
 {
   sock *sk = conn->sk;
-  byte *buf = sk->tbuf;
 
   conn->bgp->stats.tx_messages++;
   conn->bgp->stats.tx_bytes += len;
@@ -2713,7 +2713,7 @@ bgp_send(struct bgp_conn *conn, uint type, uint len)
   put_u16(buf+16, len);
   buf[18] = type;
 
-  return sk_send(sk, len);
+  return sk_send(sk, buf, len);
 }
 
 /**
@@ -2731,13 +2731,18 @@ bgp_fire_tx(struct bgp_conn *conn)
 {
   struct bgp_proto *p = conn->bgp;
   struct bgp_channel *c;
-  byte *buf, *pkt, *end;
+  byte *pkt, *end;
   uint s;
 
-  if (!conn->sk)
-    return 0;
+  DBG("BGP %s: Fire TX with packet mask 0x%x\n", conn->bgp->p.name, conn->packets_to_send);
 
-  buf = conn->sk->tbuf;
+  if (!conn->sk)
+  {
+    DBG("BGP %s: No socket available for TX\n");
+    return 0;
+  }
+
+  byte *buf = alloca(conn->tbsize);
   pkt = buf + BGP_HEADER_LENGTH;
   s = conn->packets_to_send;
 
@@ -2751,20 +2756,20 @@ bgp_fire_tx(struct bgp_conn *conn)
   {
     conn->packets_to_send = 1 << PKT_SCHEDULE_CLOSE;
     end = bgp_create_notification(conn, pkt);
-    return bgp_send(conn, PKT_NOTIFICATION, end - buf);
+    return bgp_send(conn, PKT_NOTIFICATION, buf, end - buf);
   }
   else if (s & (1 << PKT_OPEN))
   {
     conn->packets_to_send &= ~(1 << PKT_OPEN);
     end = bgp_create_open(conn, pkt);
-    return bgp_send(conn, PKT_OPEN, end - buf);
+    return bgp_send(conn, PKT_OPEN, buf, end - buf);
   }
   else if (s & (1 << PKT_KEEPALIVE))
   {
     conn->packets_to_send &= ~(1 << PKT_KEEPALIVE);
     BGP_TRACE(D_PACKETS, "Sending KEEPALIVE");
     bgp_start_timer(conn->keepalive_timer, conn->keepalive_time);
-    return bgp_send(conn, PKT_KEEPALIVE, BGP_HEADER_LENGTH);
+    return bgp_send(conn, PKT_KEEPALIVE, buf, BGP_HEADER_LENGTH);
   }
   else while (conn->channels_to_send)
   {
@@ -2775,20 +2780,20 @@ bgp_fire_tx(struct bgp_conn *conn)
     {
       c->packets_to_send &= ~(1 << PKT_ROUTE_REFRESH);
       end = bgp_create_route_refresh(c, pkt);
-      return bgp_send(conn, PKT_ROUTE_REFRESH, end - buf);
+      return bgp_send(conn, PKT_ROUTE_REFRESH, buf, end - buf);
     }
     else if (s & (1 << PKT_BEGIN_REFRESH))
     {
       /* BoRR is a subtype of RR, but uses separate bit in packets_to_send */
       c->packets_to_send &= ~(1 << PKT_BEGIN_REFRESH);
       end = bgp_create_begin_refresh(c, pkt);
-      return bgp_send(conn, PKT_ROUTE_REFRESH, end - buf);
+      return bgp_send(conn, PKT_ROUTE_REFRESH, buf, end - buf);
     }
     else if (s & (1 << PKT_UPDATE))
     {
       end = bgp_create_update(c, pkt);
       if (end)
-	return bgp_send(conn, PKT_UPDATE, end - buf);
+	return bgp_send(conn, PKT_UPDATE, buf, end - buf);
 
       /* No update to send, perhaps we need to send End-of-RIB or EoRR */
       c->packets_to_send = 0;
@@ -2798,14 +2803,14 @@ bgp_fire_tx(struct bgp_conn *conn)
       {
 	c->feed_state = BFS_NONE;
 	end = bgp_create_end_mark(c, pkt);
-	return bgp_send(conn, PKT_UPDATE, end - buf);
+	return bgp_send(conn, PKT_UPDATE, buf, end - buf);
       }
 
       else if (c->feed_state == BFS_REFRESHED)
       {
 	c->feed_state = BFS_NONE;
 	end = bgp_create_end_refresh(c, pkt);
-	return bgp_send(conn, PKT_ROUTE_REFRESH, end - buf);
+	return bgp_send(conn, PKT_ROUTE_REFRESH, buf, end - buf);
       }
     }
     else if (s)
@@ -2831,7 +2836,7 @@ bgp_schedule_packet(struct bgp_conn *conn, struct bgp_channel *c, int type)
 {
   ASSERT(conn->sk);
 
-  DBG("BGP: Scheduling packet type %d\n", type);
+  DBG("BGP %s: Scheduling packet type %d\n", conn->bgp->p.name, type);
 
   if (c)
   {
@@ -2847,35 +2852,51 @@ bgp_schedule_packet(struct bgp_conn *conn, struct bgp_channel *c, int type)
   else
     conn->packets_to_send |= 1 << type;
 
-  if ((conn->sk->tpos == conn->sk->tbuf) && !ev_active(conn->tx_ev))
-    ev_schedule(conn->tx_ev);
+  switch (type)
+  {
+    /* Notification always needs to schedule TX to close BGP from a clean context. */
+    case PKT_NOTIFICATION:
+      if (bgp_fire_tx(conn) > 0)
+	sk_schedule_tx(conn->sk);
+      return;
+
+    /* Single messages where asynchronous TX would be an overkill. */
+    case PKT_OPEN:
+    case PKT_KEEPALIVE:
+    case PKT_ROUTE_REFRESH:
+    case PKT_SCHEDULE_CLOSE:
+      bgp_fire_tx(conn);
+      return;
+
+    /* Wait until at least whole the update bunch is exported to allow for
+     * update merging. Also route refresh will include subsequent messages. */
+    case PKT_UPDATE:
+    case PKT_BEGIN_REFRESH:
+      sk_schedule_tx(conn->sk);
+      return;
+
+    default:
+      die("BGP %s: Scheduling packet of unknown type %d", conn->bgp->p.name, type);
+  }
 }
-void
-bgp_kick_tx(void *vconn)
-{
-  struct bgp_conn *conn = vconn;
 
-  DBG("BGP: kicking TX\n");
-  uint max = 1024;
-  while (--max && (bgp_fire_tx(conn) > 0))
-    ;
+#if DEBUGGING
+#define BGP_TX_SPLIT  4
+#else
+#define BGP_TX_SPLIT  1024
+#endif
 
-  if (!max && !ev_active(conn->tx_ev))
-    ev_schedule(conn->tx_ev);
-}
-
-void
+_Bool
 bgp_tx(sock *sk)
 {
   struct bgp_conn *conn = sk->data;
 
   DBG("BGP: TX hook\n");
-  uint max = 1024;
-  while (--max && (bgp_fire_tx(conn) > 0))
-    ;
+  for (uint count = 1; (bgp_fire_tx(conn) > 0); count++)
+    if (count >= BGP_TX_SPLIT)
+      return 1;	/* Retry */
 
-  if (!max && !ev_active(conn->tx_ev))
-    ev_schedule(conn->tx_ev);
+  return 0;
 }
 
 
@@ -3109,11 +3130,11 @@ bgp_rx_packet(struct bgp_conn *conn, byte *pkt, uint len)
  * checks their headers and framing and passes complete packets to
  * bgp_rx_packet().
  */
-int
-bgp_rx(sock *sk, uint size)
+uint
+bgp_rx(sock *sk, byte *buf, uint size)
 {
   struct bgp_conn *conn = sk->data;
-  byte *pkt_start = sk->rbuf;
+  byte *pkt_start = buf;
   byte *end = pkt_start + size;
   uint i, len;
 
@@ -3139,10 +3160,6 @@ bgp_rx(sock *sk, uint size)
       bgp_rx_packet(conn, pkt_start, len);
       pkt_start += len;
     }
-  if (pkt_start != sk->rbuf)
-    {
-      memmove(sk->rbuf, pkt_start, end - pkt_start);
-      sk->rpos = sk->rbuf + (end - pkt_start);
-    }
-  return 0;
+
+  return pkt_start - buf;
 }

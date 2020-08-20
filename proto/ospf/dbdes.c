@@ -193,9 +193,7 @@ ospf_do_send_dbdes(struct ospf_proto *p, struct ospf_neighbor *n)
 
   OSPF_PACKET(ospf_dump_dbdes, n->ldd_buffer,
 	      "DBDES packet sent to nbr %R on %s", n->rid, ifa->ifname);
-  sk_set_tbuf(ifa->sk, n->ldd_buffer);
-  ospf_send_to(ifa, n->ip);
-  sk_set_tbuf(ifa->sk, NULL);
+  ospf_send_to(n->ldd_buffer, ifa, n->ip);
 }
 
 /**

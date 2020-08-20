@@ -53,7 +53,12 @@ static inline void channel_reset_limit(struct channel_limit *l);
 
 
 static inline int proto_is_done(struct proto *p)
-{ return (p->proto_state == PS_DOWN) && (p->active_channels == 0); }
+{
+  return (p->active == 1)
+    && (p->proto_state == PS_DOWN)
+    && (p->active_channels == 0)
+    && (EVENT_LOCKED_GET(p, active_sockets) == 0);
+}
 
 static inline int channel_is_active(struct channel *c)
 { return (c->channel_state == CS_START) || (c->channel_state == CS_UP); }
@@ -320,8 +325,7 @@ channel_schedule_feed_net(struct channel *c, net_addr *n)
   if (!c->net_feed_event)
     c->net_feed_event = ev_new_init(c->proto->pool, channel_feed_net, c);
 
-  if (!ev_active(c->net_feed_event))
-    ev_schedule(c->net_feed_event);
+  ev_schedule(c->net_feed_event);
 }
 
 static void
@@ -844,6 +848,8 @@ proto_event(void *ptr)
     if (p->proto->cleanup)
       p->proto->cleanup(p);
 
+    rfree(p->pool);
+
     p->active = 0;
     proto_log_state_change(p);
     proto_rethink_goal(p);
@@ -878,6 +884,8 @@ proto_new(struct proto_config *cf)
   cf->proto = p;
 
   init_list(&p->channels);
+
+  EVENT_LOCKED_INIT_LOCK(p);
 
   return p;
 }
@@ -1783,8 +1791,6 @@ proto_do_down(struct proto *p)
 {
   p->down_code = 0;
   neigh_prune();
-  rfree(p->pool);
-  p->pool = NULL;
 
   /* Shutdown is finished in the protocol event */
   if (proto_is_done(p))

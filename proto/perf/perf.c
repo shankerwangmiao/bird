@@ -104,8 +104,7 @@ perf_ifa_notify(struct proto *P, uint flags, struct ifa *ad)
 
   if (p->ifa && p->ifa == ad && (flags & IF_CHANGE_DOWN)) {
     p->ifa = NULL;
-    if (ev_active(p->loop))
-      ev_cancel(p->loop);
+    ev_cancel(p->loop);
 
     return;
   }

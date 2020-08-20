@@ -667,22 +667,21 @@ mrt_event(void *P)
  *	MRT Table Dump: CLI command
  */
 
-static void
-mrt_dump_cont(struct cli *c)
+static _Bool
+mrt_dump_cont(struct cli *c, struct mrt_table_dump_state *s)
 {
-  if (!mrt_table_dump_step(c->rover))
-    return;
+  if (!mrt_table_dump_step(s))
+    return 1;
 
   cli_printf(c, 0, "");
-  mrt_table_dump_free(c->rover);
-  c->cont = c->cleanup = c->rover = NULL;
+  mrt_table_dump_free(s);
+  return 0;
 }
 
 static void
-mrt_dump_cleanup(struct cli *c)
+mrt_dump_cleanup(struct mrt_table_dump_state *s)
 {
-  mrt_table_dump_free(c->rover);
-  c->rover = NULL;
+  mrt_table_dump_free(s);
 }
 
 void
@@ -708,9 +707,15 @@ mrt_dump_cmd(struct mrt_dump_data *d)
   if (s->table_ptr)
     rt_lock_table(s->table_ptr);
 
-  this_cli->cont = mrt_dump_cont;
-  this_cli->cleanup = mrt_dump_cleanup;
-  this_cli->rover = s;
+  CLI_TRY(this_cli) {
+    while (mrt_dump_cont(this_cli, s))
+    {
+      the_bird_unlock();
+      the_bird_lock();
+    }
+  } CLI_EXCEPT(this_cli) {
+    mrt_dump_cleanup(s);
+  }
 }
 
 

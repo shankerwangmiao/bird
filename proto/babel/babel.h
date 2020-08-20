@@ -191,7 +191,6 @@ struct babel_iface {
   btime want_triggered;
 
   timer *timer;
-  event *send_event;
 };
 
 struct babel_neighbor {
@@ -378,7 +377,7 @@ void babel_show_routes(struct proto *P);
 void babel_enqueue(union babel_msg *msg, struct babel_iface *ifa);
 void babel_send_unicast(union babel_msg *msg, struct babel_iface *ifa, ip_addr dest);
 int babel_open_socket(struct babel_iface *ifa);
-void babel_send_queue(void *arg);
+void babel_send_queue(struct babel_iface *ifa);
 
 
 #endif

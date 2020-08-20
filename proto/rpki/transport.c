@@ -73,14 +73,17 @@ rpki_tr_open(struct rpki_tr_sock *tr)
   /* sk->type -1 is invalid value, a correct value MUST be set in the specific transport layer in open_fp() hook */
   sk->type = -1;
 
-  sk->tx_hook = rpki_connected_hook;
-  sk->err_hook = rpki_err_hook;
+  EVENT_LOCKED_INIT(sk,
+      .tx_hook = rpki_connected_hook,
+      .tx_err = rpki_err_hook,
+      .rx_err = rpki_err_hook,
+      .rbsize = RPKI_RX_BUFFER_SIZE,
+      );
+
   sk->data = cache;
   sk->daddr = cf->ip;
   sk->dport = cf->port;
   sk->host = cf->hostname;
-  sk->rbsize = RPKI_RX_BUFFER_SIZE;
-  sk->tbsize = RPKI_TX_BUFFER_SIZE;
   sk->tos = IP_PREC_INTERNET_CONTROL;
 
   if (ipa_zero2(sk->daddr) && sk->host)

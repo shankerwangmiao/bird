@@ -267,6 +267,14 @@ no_partial:
   goto okay;
 }
 
+void *
+sl_allocz(slab *s)
+{
+  void *out = sl_alloc(s);
+  memset(out, 0, s->data_size);
+  return out;
+}
+
 /**
  * sl_free - return a free object back to a Slab
  * @s: slab

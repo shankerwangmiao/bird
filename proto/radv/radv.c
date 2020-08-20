@@ -60,7 +60,13 @@ radv_timer(timer *tm)
   if (p->prune_time <= now)
     radv_prune_routes(p);
 
-  radv_send_ra(ifa, IPA_NONE);
+  if (ifa->tx_stuck)
+  {
+    log(L_WARN "%s: TX queue stuck on %s", p->p.name, ifa->iface->name);
+    ifa->tx_expired = 1;
+  }
+  else
+    radv_send_ra(ifa, IPA_NONE);
 
   /* Update timer */
   ifa->last = now;
