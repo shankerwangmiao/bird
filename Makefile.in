@@ -197,7 +197,7 @@ tags:
 	cd $(srcdir) ; etags -lc `find $(dirs) -name *.[chY]`
 
 cscope:
-	cd $(srcdir) ; find $(dirs) -name *.[chY] > cscope.files ; cscope -b
+	cd $(srcdir) ; find $(dirs) -name '*.[chY]' > cscope.files ; cscope -b
 
 # Install
 
