@@ -35,11 +35,10 @@
 #include "lib/heap.h"
 #include "lib/resource.h"
 #include "lib/timer.h"
-
+#include "lib/timeloop.h"
 
 struct timeloop main_timeloop;
 _Thread_local struct timeloop *timeloop_current;
-
 
 void wakeup_kick_current(void);
 
@@ -55,15 +54,17 @@ current_real_time(void)
   struct timeloop *loop = timeloop_current;
 
   if (!loop->real_time)
-    times_update_real_time(loop);
+    LOCKED_DO(timer, loop->domain)
+      times_update_real_time(CURRENT_LOCK, loop);
 
   return loop->real_time;
 }
 
 
-#define TIMER_LESS(a,b)		((a)->expires < (b)->expires)
+#define TM_INDEX_U(t)		UNLOCKED_STRUCT(timer, (t))->index
+#define TIMER_LESS(a,b)		(TM_EXPIRES_U((a)) < TM_EXPIRES_U((b)))
 #define TIMER_SWAP(heap,a,b,t)	(t = heap[a], heap[a] = heap[b], heap[b] = t, \
-				   heap[a]->index = (a), heap[b]->index = (b))
+				   TM_INDEX_U((heap[a])) = (a), TM_INDEX_U((heap[b])) = (b))
 
 
 static void
@@ -75,19 +76,26 @@ tm_free(resource *r)
 }
 
 static void
-tm_dump(resource *r)
+tm_dump_locked(LOCKED(timer), timer *t)
 {
-  timer *t = (void *) r;
-
   debug("(code %p, data %p, ", t->hook, t->data);
   if (t->randomize)
     debug("rand %d, ", t->randomize);
   if (t->recurrent)
     debug("recur %d, ", t->recurrent);
-  if (t->expires)
-    debug("expires in %d ms)\n", (t->expires - current_time()) TO_MS);
+  if (TM_EXPIRES_U(t))
+    debug("expires in %d ms)\n", (TM_EXPIRES_U(t) - current_time()) TO_MS);
   else
     debug("inactive)\n");
+}
+
+static void
+tm_dump(resource *r)
+{
+  timer *t = (void *) r;
+
+  LOCKED_DO(timer, timeloop_current->domain)
+    tm_dump_locked(CURRENT_LOCK, t);
 }
 
 
@@ -104,68 +112,143 @@ timer *
 tm_new(pool *p)
 {
   timer *t = ralloc(p, &tm_class);
-  t->index = -1;
+  LOCKED_STRUCT_INIT(timer, t, timeloop_current->domain,
+      .index = -1
+      );
   return t;
 }
 
 void pipe_kick(int fd);
 
+static void
+tm_set_unlocked(LOCKED(timer), timer *t, btime when)
+{
+  struct timeloop *loop = timeloop_current;
+  uint tc = timers_count(CURRENT_LOCK, loop);
+
+  _Bool kick = (timers_first(CURRENT_LOCK, loop) == t);
+
+  AUTO_TYPE timers = &TL_TIMERS(loop);
+  AUTO_TYPE tu = UNLOCKED_STRUCT(timer, t);
+
+  if (!tu->expires)
+  {
+    tu->index = ++tc;
+    tu->expires = when;
+    BUFFER_PUSH(*timers) = t;
+    HEAP_INSERT(timers->data, tc, timer *, TIMER_LESS, TIMER_SWAP);
+  }
+  else if (tu->expires < when)
+  {
+    tu->expires = when;
+    HEAP_INCREASE(timers->data, tc, timer *, TIMER_LESS, TIMER_SWAP, tu->index);
+  }
+  else if (tu->expires > when)
+  {
+    tu->expires = when;
+    HEAP_DECREASE(timers->data, tc, timer *, TIMER_LESS, TIMER_SWAP, tu->index);
+  }
+
+  if (kick || (timers_first(CURRENT_LOCK, loop) == t))
+    pipe_kick(loop->fds[1]);
+}
+
 void
 tm_set(timer *t, btime when)
 {
-  struct timeloop *loop = timeloop_current;
-  uint tc = timers_count(loop);
-
-  if (!t->expires)
-  {
-    t->index = ++tc;
-    t->expires = when;
-    BUFFER_PUSH(loop->timers) = t;
-    HEAP_INSERT(loop->timers.data, tc, timer *, TIMER_LESS, TIMER_SWAP);
-  }
-  else if (t->expires < when)
-  {
-    t->expires = when;
-    HEAP_INCREASE(loop->timers.data, tc, timer *, TIMER_LESS, TIMER_SWAP, t->index);
-  }
-  else if (t->expires > when)
-  {
-    t->expires = when;
-    HEAP_DECREASE(loop->timers.data, tc, timer *, TIMER_LESS, TIMER_SWAP, t->index);
-  }
-  
-  pipe_kick(loop->fds[1]);
+  LOCKED_DO(timer, timeloop_current->domain)
+    tm_set_unlocked(CURRENT_LOCK, t, when);
 }
 
 void
 tm_start(timer *t, btime after)
 {
-  tm_set(t, current_time() + MAX(after, 0));
+  LOCKED_DO(timer, timeloop_current->domain)
+    tm_set_unlocked(CURRENT_LOCK, t, current_time() + MAX(after, 0));
+}
+
+void
+tm_set_max(timer *t, btime when)
+{
+  LOCKED_DO(timer, timeloop_current->domain)
+    if (when > UNLOCKED_STRUCT(timer, t)->expires)
+      tm_set_unlocked(CURRENT_LOCK, t, when);
+}
+
+void
+tm_start_max(timer *t, btime after)
+{
+  btime now_ = current_time();
+  btime when = after + now_;
+
+  LOCKED_DO(timer, timeloop_current->domain)
+    if (when > UNLOCKED_STRUCT(timer, t)->expires)
+      tm_set_unlocked(CURRENT_LOCK, t, when);
+}
+
+static void
+tm_stop_unlocked(LOCKED(timer), timer *t)
+{
+  struct timeloop *loop = timeloop_current;
+
+  if (TM_EXPIRES_U(t))
+  {
+    AUTO_TYPE timers = &TL_TIMERS(loop);
+    AUTO_TYPE tu = UNLOCKED_STRUCT(timer, t);
+
+    uint tc = timers_count(CURRENT_LOCK, loop);
+
+    _Bool kick = (timers_first(CURRENT_LOCK, loop) == t);
+
+    HEAP_DELETE(timers->data, tc, timer *, TIMER_LESS, TIMER_SWAP, tu->index);
+    BUFFER_POP(*timers);
+
+    tu->index = -1;
+    tu->expires = 0;
+
+    if (kick)
+      pipe_kick(loop->fds[1]);
+  }
 }
 
 void
 tm_stop(timer *t)
 {
-  if (!t->expires)
-    return;
+  LOCKED_DO(timer, timeloop_current->domain)
+    tm_stop_unlocked(CURRENT_LOCK, t);
+}
 
-  struct timeloop *loop = timeloop_current;
-  uint tc = timers_count(loop);
+_Bool
+tm_active(timer *t)
+{
+  _Bool out;
+  LOCKED_DO(timer, timeloop_current->domain) out = TM_EXPIRES_U(t) != 0;
+  return out;
+}
 
-  HEAP_DELETE(loop->timers.data, tc, timer *, TIMER_LESS, TIMER_SWAP, t->index);
-  BUFFER_POP(loop->timers);
-
-  t->index = -1;
-  t->expires = 0;
+btime
+tm_remains(timer *t)
+{
+  btime rem;
+  LOCKED_DO(timer, timeloop_current->domain) rem = TM_REMAINS_U(t);
+  return rem;
 }
 
 void
-timers_init(struct timeloop *loop, pool *p)
+timers_init(struct timeloop *loop, pool *p, const char *name)
 {
   times_init(loop);
 
-  BUFFER_INIT(loop->timers, p, 4);
-  BUFFER_PUSH(loop->timers) = NULL;
+  loop->domain = DOMAIN_NEW(timer, name);
+  LOCKED_STRUCT_INIT_LOCK(timer, loop, loop->domain);
+
+  LOCKED_DO(timer, loop->domain)
+  {
+    AUTO_TYPE lu = UNLOCKED_STRUCT(timer, loop);
+
+    BUFFER_INIT(lu->timers, p, 4);
+    BUFFER_PUSH(lu->timers) = NULL;
+  }
 }
 
 void io_log_event(void *hook, void *data);
@@ -173,44 +256,51 @@ void io_log_event(void *hook, void *data);
 void
 timers_fire(struct timeloop *loop)
 {
-  btime base_time;
-  timer *t;
-
-  times_update(loop);
-  base_time = loop->last_time;
-
-  while (t = timers_first(loop))
+  while (1)
   {
-    if (t->expires > base_time)
-      return;
+    timer *t = NULL;
 
-    if (t->recurrent)
+    LOCKED_DO(timer, loop->domain)
     {
-      btime when = t->expires + t->recurrent;
+      btime base_time;
 
-      if (when <= loop->last_time)
-	when = loop->last_time + t->recurrent;
+      times_update(CURRENT_LOCK, loop);
+      base_time = loop->last_time;
 
-      if (t->randomize)
-	when += random() % (t->randomize + 1);
+      if ((t = timers_first(CURRENT_LOCK, loop)) && TM_EXPIRES_U(t) <= base_time)
+      {
+	AUTO_TYPE tu = UNLOCKED_STRUCT(timer, t);
 
-      tm_set(t, when);
+	if (t->recurrent)
+	{
+	  btime when = tu->expires + t->recurrent;
+
+	  if (when <= loop->last_time)
+	    when = loop->last_time + t->recurrent;
+
+	  if (t->randomize)
+	    when += random() % (t->randomize + 1);
+
+	  tm_set_unlocked(CURRENT_LOCK, t, when);
+	}
+	else
+	  tm_stop_unlocked(CURRENT_LOCK, t);
+      }
+      else
+	t = NULL;
     }
+
+    if (t)
+      t->hook(t);
     else
-      tm_stop(t);
-
-    /* This is ugly hack, we want to log just timers executed from the main I/O loop */
-    if (loop == &main_timeloop)
-      io_log_event(t->hook, t->data);
-
-    t->hook(t);
+      return;
   }
 }
 
 void
 timer_init(void)
 {
-  timers_init(&main_timeloop, &root_pool);
+  timers_init(&main_timeloop, &root_pool, "Main timer");
   timeloop_current = &main_timeloop;
 }
 

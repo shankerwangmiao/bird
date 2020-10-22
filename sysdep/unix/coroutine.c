@@ -55,15 +55,24 @@ struct domain_generic {
   pthread_mutex_t mutex;
   struct domain_generic **prev;
   struct lock_order *locked_by;
+  const char *name;
 };
 
-#define DOMAIN_INIT { .mutex = PTHREAD_MUTEX_INITIALIZER }
+#define DOMAIN_INIT(_name) { .mutex = PTHREAD_MUTEX_INITIALIZER, .name = _name }
 
-static struct domain_generic event_state_domain_gen = DOMAIN_INIT,
-			     the_bird_domain_gen = DOMAIN_INIT;
+static struct domain_generic event_state_domain_gen = DOMAIN_INIT("Event state"),
+			     the_bird_domain_gen = DOMAIN_INIT("The BIRD");
 
 DOMAIN(event_state) event_state_domain = { .event_state = &event_state_domain_gen };
 DOMAIN(the_bird) the_bird_domain = { .the_bird = &the_bird_domain_gen };
+
+struct domain_generic *
+domain_new(const char *name)
+{
+  struct domain_generic *dg = xmalloc(sizeof(struct domain_generic));
+  *dg = (struct domain_generic) DOMAIN_INIT(name);
+  return dg;
+}
 
 #define EVENT_UNLOCKED for ( \
   _Bool _bird_aux = (do_unlock(event_state_domain.event_state, &locking_stack.event_state), 1); \
@@ -225,10 +234,12 @@ static void coro_free(void)
   coro_local = NULL;
 }
 
+#if 0
 /* From sysdep/unix/io.c */
 void io_update_time(void);
 void io_log_event(void *hook, void *data);
 void io_close_event(void);
+#endif
 
 static _Bool ev_get_cancelled_(LOCKED(event_state))
 {
@@ -357,8 +368,6 @@ _Bool ev_cancel(event *e)
   return out;
 }
 
-extern _Thread_local struct timeloop *timeloop_current;
-
 static void *ev_entry(void *data)
 {
   timeloop_current = &main_timeloop; /* TODO: use local timers if appropriate */
@@ -379,7 +388,9 @@ static void *ev_entry(void *data)
       void (*hook)(void *) = evlu->hook;
       void *data = evlu->data;
 
+      /*
       io_log_event(hook, data);
+      */
 
       EV_DEBUG(ev_local, "event entry");
 
@@ -413,7 +424,7 @@ static void *ev_entry(void *data)
 	}
 
       DBG("event %p exit\n", ev_local);
-      io_update_time();
+      /*      io_update_time(); */
     } while (coro_local->coro.flags & CORO_REPEAT);
 
     ev_check_cancelled(CURRENT_LOCK);
@@ -503,17 +514,20 @@ void ev_schedule(event *ev)
 static const char SKC_CANCEL = 0;
 static const char SKC_RELOAD = 1;
 
-#define sk_write_pipe(su, dir, c) write(su->dir##_coro->cancel_pipe[1], c, 1)
+#define sk_write_pipe(s, su, dir, c) ({ \
+    int e = write(su->dir##_coro->cancel_pipe[1], c, 1); \
+    if (e < 1) SK_DEBUG(s, "write cancel pipe %s returned %d (%m)", #dir, e); \
+    })
 
 #define sk_do_cancel(s, su, dir) ({ \
       ASSERT_DIE(!(su->dir##_coro->c.flags & CORO_REPEAT)); \
       if (su->dir##_coro == &coro_local->sock) \
 	su->dir##_coro->c.flags |= CORO_STOP; \
       else \
-	sk_write_pipe(su, dir, &SKC_CANCEL); \
+	sk_write_pipe(s, su, dir, &SKC_CANCEL); \
       })
    
-#define sk_do_reload(su, dir) sk_write_pipe(su, dir, &SKC_RELOAD)
+#define sk_do_reload(s, su, dir) sk_write_pipe(s, su, dir, &SKC_RELOAD)
 
 static void
 sk_close_debug(LOCKED(event_state), struct birdsock *s)
@@ -573,7 +587,7 @@ void sk_set_rbsize(sock *s, uint rbsize)
     if (rbsize > su->rbsize)
     {
       su->rbsize = rbsize;
-      sk_do_reload(su, rx);
+      sk_do_reload(s, su, rx);
     }
   }
 }
@@ -625,15 +639,19 @@ static void *sk_entry(void *data)
 
   while (!cancelled && !(coro_local->coro.flags & CORO_STOP))
   {
+    /*
     uint (*rx_hook)(struct birdsock *, byte *buf, uint size);
     _Bool (*tx_hook)(struct birdsock *);
+    */
 
     EVENT_LOCKED {
       AUTO_TYPE su = UNLOCKED_STRUCT(event_state, sk_local);
       rx = SKL_RX;
       tx = SKL_TX;
+      /*
       rx_hook = su->rx_hook;
       tx_hook = su->tx_hook;
+      */
     }
 
     if (!tx && !rx)
@@ -714,17 +732,17 @@ static void *sk_entry(void *data)
     if (tx && (pfd[1].revents & POLLOUT))
     {
       SK_DEBUG_UNLOCKED(sk_local, "write");
-      io_log_event(tx_hook, sk_local->data);
+//      io_log_event(tx_hook, sk_local->data);
       cancelled = !sk_write(sk_local);
-      io_close_event();
+//      io_close_event();
     }
 
     else if (rx && (pfd[1].revents & POLLIN))
     {
       SK_DEBUG_UNLOCKED(sk_local, "read");
-      io_log_event(rx_hook, sk_local->data);
+//      io_log_event(rx_hook, sk_local->data);
       sk_read(sk_local, buf, pfd[1].revents);
-      io_close_event();
+//      io_close_event();
     }
   }
 

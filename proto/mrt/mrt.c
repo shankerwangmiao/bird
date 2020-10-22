@@ -863,9 +863,9 @@ mrt_reconfigure(struct proto *P, struct proto_config *CF)
     TRACE(D_EVENTS, "Changing period from %u to %u s", old->period, new->period);
 
     btime now = current_time();
-    btime new_time = p->timer->expires - (old->period S) + (new->period S);
+    btime new_rem = tm_remains(p->timer) - (old->period S) + (new->period S);
     p->timer->recurrent = new->period S;
-    tm_set(p->timer, MAX(now, new_time));
+    tm_start(p->timer, MAX(now, new_rem));
   }
 
   return 1;

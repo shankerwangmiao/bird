@@ -122,7 +122,7 @@ kif_force_scan(void)
 void
 kif_request_scan(void)
 {
-  if (kif_proto && (kif_scan_timer->expires > (current_time() + 1 S)))
+  if (kif_proto && (tm_remains(kif_scan_timer) > 1 S))
     tm_start(kif_scan_timer, 1 S);
 }
 

@@ -19,6 +19,7 @@ struct domain_generic;
 #define LOI(type) struct domain_generic *type;
 struct lock_order {
   LOI(the_bird);
+  LOI(timer);
   LOI(event_state);
 };
 #undef LOI
@@ -44,7 +45,10 @@ void domain_free_after_unlock(struct domain_generic *dg);
 /* Pass a locked context to a subfunction */
 #define LOCKED(type) DOMAIN(type) _bird_current_lock
 #define CURRENT_LOCK _bird_current_lock
-#define ASSERT_LOCK(type, d) ASSERT_DIE(_bird_current_lock.type == (d).type)
+#define IS_LOCKED(type)  (last_locked - &locking_stack.type >= 0) && locking_stack.type
+#define ASSERT_LOCK(type, d) ASSERT_DIE(IS_LOCKED(type) && _bird_current_lock.type == (d).type)
+
+#define SUPER_LOCK(type)  ({ ASSERT_DIE(IS_LOCKED(type)); (DOMAIN(type)) { .type = locking_stack.type }; })
 
 /* Uncoupled lock/unlock, don't use directly */
 #define LOCK_DOMAIN(type, d)	LOCKED(type) = (do_lock(((d).type), &(locking_stack.type)), (d))
@@ -115,17 +119,25 @@ extern DOMAIN(event_state) event_state_domain;
 #define EVENT_LOCKED_INIT(str, ...) LOCKED_STRUCT_INIT(event_state, str, event_state_domain, __VA_ARGS__)
 #define EVENT_LOCKED_INIT_LOCK(str) LOCKED_STRUCT_INIT_LOCK(event_state, str, event_state_domain)
 
+/* Use with care. To be removed in near future. */
 DEFINE_DOMAIN(the_bird);
 extern DOMAIN(the_bird) the_bird_domain;
 
 #define the_bird_lock()		do_lock(the_bird_domain.the_bird, &locking_stack.the_bird)
 #define the_bird_unlock()	do_unlock(the_bird_domain.the_bird, &locking_stack.the_bird)
 
-#define THE_BIRD_LOCKED		for ( \
-    UNUSED LOCK_DOMAIN(the_bird, the_bird_domain), *_bird_aux = (&the_bird_domain); \
+#define THE_BIRD_LOCKED for ( \
+    UNUSED LOCK_DOMAIN(the_bird, the_bird_domain), *_bird_aux = &the_bird_domain; \
     _bird_aux ? ((_bird_aux = NULL), 1) : 0; \
     UNLOCK_DOMAIN(the_bird, the_bird_domain))
 
-#define assert_bird_lock()	ASSERT_DIE(locking_stack.the_bird == the_bird_domain.the_bird)
+#define THE_BIRD_LOCKED_RETURN(expr) return ({ \
+    UNUSED LOCK_DOMAIN(the_bird, the_bird_domain); \
+    AUTO_TYPE _ret = expr; \
+    UNLOCK_DOMAIN(the_bird, the_bird_domain); \
+    _ret; \
+    })
+
+#define assert_bird_lock() ASSERT_DIE(SUPER_LOCK(the_bird).the_bird == the_bird_domain.the_bird)
 
 #endif

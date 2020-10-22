@@ -379,7 +379,7 @@ config_commit(struct config *c, int type, uint timeout)
 int
 config_confirm(void)
 {
-  if (config_timer->expires == 0)
+  if (!tm_active(config_timer))
     return CONF_NOTHING;
 
   tm_stop(config_timer);

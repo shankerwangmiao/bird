@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -28,6 +29,7 @@
 #include "lib/socket.h"
 #include "lib/event.h"
 #include "lib/timer.h"
+#include "lib/timeloop.h"
 #include "lib/string.h"
 #include "nest/route.h"
 #include "nest/protocol.h"
@@ -502,15 +504,15 @@ cmd_graceful_restart(void)
  *	Signals
  */
 
-volatile sig_atomic_t async_config_flag;
-volatile sig_atomic_t async_dump_flag;
-volatile sig_atomic_t async_shutdown_flag;
+static volatile _Atomic sig_atomic_t async_config_flag;
+static volatile _Atomic sig_atomic_t async_dump_flag;
+static volatile _Atomic sig_atomic_t async_shutdown_flag;
 
 static void
 handle_sighup(int sig UNUSED)
 {
   DBG("Caught SIGHUP...\n");
-  async_config_flag = 1;
+  atomic_store_explicit(&async_config_flag, 1, memory_order_release);
   write(main_timeloop.fds[1], "", 1);
 }
 
@@ -518,7 +520,7 @@ static void
 handle_sigusr(int sig UNUSED)
 {
   DBG("Caught SIGUSR...\n");
-  async_dump_flag = 1;
+  atomic_store_explicit(&async_dump_flag, 1, memory_order_release);
   write(main_timeloop.fds[1], "", 1);
 }
 
@@ -526,11 +528,13 @@ static void
 handle_sigterm(int sig UNUSED)
 {
   DBG("Caught SIGTERM...\n");
-  async_shutdown_flag = 1;
+  atomic_store_explicit(&async_shutdown_flag, 1, memory_order_release);
   write(main_timeloop.fds[1], "", 1);
 }
 
+/*
 void watchdog_sigalrm(int sig UNUSED);
+*/
 
 static void
 signal_init(void)
@@ -547,9 +551,11 @@ signal_init(void)
   sa.sa_handler = handle_sigterm;
   sa.sa_flags = SA_RESTART;
   sigaction(SIGTERM, &sa, NULL);
+  /*
   sa.sa_handler = watchdog_sigalrm;
   sa.sa_flags = 0;
   sigaction(SIGALRM, &sa, NULL);
+  */
   signal(SIGPIPE, SIG_IGN);
 }
 
@@ -743,6 +749,8 @@ parse_args(int argc, char **argv)
 int
 main(int argc, char **argv)
 {
+  the_bird_lock();
+
 #ifdef HAVE_LIBDMALLOC
   if (!getenv("DMALLOC_OPTIONS"))
     dmalloc_debug(0x2f03d00);
@@ -803,8 +811,6 @@ main(int argc, char **argv)
       dup2(0, 2);
     }
 
-  the_bird_lock();
-
   main_thread_init();
 
   write_pid_file();
@@ -822,6 +828,26 @@ main(int argc, char **argv)
   log(L_INFO "Started");
   DBG("Entering I/O loop.\n");
 
-  io_loop();
+  the_bird_unlock();
+
+  while (1)
+  {
+    timers_wait(&main_timeloop);
+
+    THE_BIRD_LOCKED
+    {
+      if (atomic_exchange_explicit(&async_config_flag, 0, memory_order_acquire))
+	async_config();
+
+      if (atomic_exchange_explicit(&async_dump_flag, 0, memory_order_acquire))
+	async_dump();
+
+      if (atomic_exchange_explicit(&async_shutdown_flag, 0, memory_order_acquire))
+	async_shutdown();
+
+      timers_fire(&main_timeloop);
+    }
+  }
+
   bug("I/O loop died");
 }

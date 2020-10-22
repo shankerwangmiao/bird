@@ -13,7 +13,9 @@
 #include "nest/bird.h"
 #include "lib/buffer.h"
 #include "lib/resource.h"
+#include "lib/locking.h"
 
+DEFINE_DOMAIN(timer);
 
 typedef struct timer
 {
@@ -21,53 +23,43 @@ typedef struct timer
   void (*hook)(struct timer *);
   void *data;
 
-  btime expires;			/* 0=inactive */
   uint randomize;			/* Amount of randomization */
   uint recurrent;			/* Timer recurrence */
 
-  int index;
+  LOCKED_STRUCT(timer,
+      btime expires;			/* 0=inactive */
+      int index;
+      );
 } timer;
 
-struct timeloop
-{
-  BUFFER_(timer *) timers;
-  btime last_time;
-  btime real_time;
-  int fds[2];				/* sysdep specific data */
-};
-
-static inline uint timers_count(struct timeloop *loop)
-{ return loop->timers.used - 1; }
-
-static inline timer *timers_first(struct timeloop *loop)
-{ return (loop->timers.used > 1) ? loop->timers.data[1] : NULL; }
-
+struct timeloop;
 extern struct timeloop main_timeloop;
+extern _Thread_local struct timeloop *timeloop_current;
+
+/*
+#define TIMELOOP_DO(loop) \
+  for (struct timeloop *tmp = timeloop_current, *_loop = loop; \
+      _loop && (timeloop_current = _loop); \
+      timeloop_current = tmp, _loop = NULL)
+      */
+
+/* Wait for next timer. */
+void timers_wait(struct timeloop *loop);
 
 btime current_time(void);
 btime current_real_time(void);
 
-//#define now (current_time() TO_S)
-//#define now_real (current_real_time() TO_S)
 extern btime boot_time;
 
 timer *tm_new(pool *p);
 void tm_set(timer *t, btime when);
+void tm_set_max(timer *t, btime when);
 void tm_start(timer *t, btime after);
+void tm_start_max(timer *t, btime after);
 void tm_stop(timer *t);
 
-static inline int
-tm_active(timer *t)
-{
-  return t->expires != 0;
-}
-
-static inline btime
-tm_remains(timer *t)
-{
-  btime now_ = current_time();
-  return (t->expires > now_) ? (t->expires - now_) : 0;
-}
+_Bool tm_active(timer *t);
+btime tm_remains(timer *t);
 
 static inline timer *
 tm_new_init(pool *p, void (*hook)(struct timer *), void *data, uint rec, uint rand)
@@ -80,27 +72,13 @@ tm_new_init(pool *p, void (*hook)(struct timer *), void *data, uint rec, uint ra
   return t;
 }
 
-static inline void
-tm_set_max(timer *t, btime when)
-{
-  if (when > t->expires)
-    tm_set(t, when);
-}
-
-static inline void
-tm_start_max(timer *t, btime after)
-{
-  btime rem = tm_remains(t);
-  tm_start(t, MAX_(rem, after));
-}
-
 /* In sysdep code */
 void times_init(struct timeloop *loop);
-void times_update(struct timeloop *loop);
-void times_update_real_time(struct timeloop *loop);
+void times_update(LOCKED(timer), struct timeloop *loop);
+void times_update_real_time(LOCKED(timer), struct timeloop *loop);
 
 /* For I/O loop */
-void timers_init(struct timeloop *loop, pool *p);
+void timers_init(struct timeloop *loop, pool *p, const char *name);
 void timers_fire(struct timeloop *loop);
 
 void timer_init(void);

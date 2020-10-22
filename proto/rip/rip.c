@@ -976,7 +976,7 @@ rip_timer(timer *t)
 static inline void
 rip_kick_timer(struct rip_proto *p)
 {
-  if ((p->timer->expires > (current_time() + 100 MS)))
+  if (tm_remains(p->timer) > 100 MS)
     tm_start(p->timer, 100 MS);
 }
 
@@ -1038,7 +1038,7 @@ rip_iface_timer(timer *t)
 static inline void
 rip_iface_kick_timer(struct rip_iface *ifa)
 {
-  if ((! tm_active(ifa->timer)) || (ifa->timer->expires > (current_time() + 100 MS)))
+  if ((! tm_active(ifa->timer)) || (tm_remains(ifa->timer) > 100 MS))
     tm_start(ifa->timer, 100 MS);
 }
 

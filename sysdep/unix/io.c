@@ -40,6 +40,7 @@
 #include "lib/socket.h"
 #include "lib/event.h"
 #include "lib/timer.h"
+#include "lib/timeloop.h"
 #include "lib/string.h"
 #include "nest/iface.h"
 #include "nest/protocol.h"
@@ -147,8 +148,10 @@ times_init(struct timeloop *loop)
 }
 
 void
-times_update(struct timeloop *loop)
+times_update(LOCKED(timer), struct timeloop *loop)
 {
+  ASSERT_LOCK(timer, loop->domain);
+
   struct timespec ts;
   int rv;
 
@@ -166,8 +169,10 @@ times_update(struct timeloop *loop)
 }
 
 void
-times_update_real_time(struct timeloop *loop)
+times_update_real_time(LOCKED(timer), struct timeloop *loop)
 {
+  ASSERT_LOCK(timer, loop->domain);
+
   struct timespec ts;
   int rv;
 
@@ -2158,6 +2163,7 @@ sk_dump_all(void)
   */
 }
 
+#if 0
 
 /*
  *	Internal event log and watchdog
@@ -2179,36 +2185,6 @@ static btime loop_time;
 
 static _Thread_local struct event_log_entry *event_open;
 static _Thread_local btime last_time;
-
-void
-io_update_time(void)
-{
-  struct timespec ts;
-  int rv;
-
-  /*
-   * This is third time-tracking procedure (after update_times() above and
-   * times_update() in BFD), dedicated to internal event log and latency
-   * tracking. Hopefully, we consolidate these sometimes.
-   */
-
-  rv = clock_gettime(CLOCK_MONOTONIC, &ts);
-  if (rv < 0)
-    die("clock_gettime: %m");
-
-  last_time = ts.tv_sec S + ts.tv_nsec NS;
-
-  if (event_open)
-  {
-    event_open->duration = last_time - event_open->timestamp;
-
-    if (event_open->duration > config->latency_limit)
-      log(L_WARN "Event 0x%p 0x%p took %d ms",
-	  event_open->hook, event_open->data, (int) (event_open->duration TO_MS));
-
-    event_open = NULL;
-  }
-}
 
 /**
  * io_log_event - mark approaching event into event log
@@ -2311,6 +2287,7 @@ watchdog_stop(void)
     log(L_WARN "I/O loop cycle took %d ms for %d events",
 	(int) (duration TO_MS), event_log_num);
 }
+#endif
 
 
 /*
@@ -2349,76 +2326,33 @@ io_init(void)
 }
 
 void
-io_loop(void)
+timers_wait(struct timeloop *loop)
 {
-  watchdog_start1();
-  times_update(&main_timeloop);
-  uint skips = 0;
-  for(;;)
-    {
-      /* Find when to run next timer. Time is in milliseconds. */
-      timer *t = timers_first(&main_timeloop);
-      int poll_tout = t ? tm_remains(t) TO_MS : -1;
+  int poll_tout;
+  LOCKED_DO(timer, loop->domain)
+  {
+    times_update(CURRENT_LOCK, loop);
+    timer *t = timers_first(CURRENT_LOCK, &main_timeloop);
+    poll_tout = t ? TM_REMAINS_U(t) TO_MS : -1;
+  }
+  
+  if (poll_tout == 0)
+    return;
 
-      if (!poll_tout && (++skips < 16))
-      {
-	DBG("skip poll with timeout zero\n");
-	watchdog_stop();
-	the_bird_unlock();
-	the_bird_lock();
-	watchdog_start();
-      }
-      else
-      {
-	skips = 0;
-	/* And finally enter poll() to find active sockets */
-	watchdog_stop();
-	DBG("main loop poll with timeout %d\n", poll_tout);
-	the_bird_unlock();
-	struct pollfd pfd = {
-	  .fd = main_timeloop.fds[0],
-	  .events = POLLIN,
-	};
-	if ((poll(&pfd, 1, poll_tout) < 0) && (errno != EINTR) && (errno != EAGAIN))
-	  die("poll: %m");
-	
-	the_bird_lock();
-	DBG("main loop poll returned\n");
-	watchdog_start();
-      }
+  struct pollfd pfd = {
+    .fd = loop->fds[0],
+    .events = POLLIN,
+  };
 
-      char buf[64];
-      int e = read(main_timeloop.fds[0], buf, 64);
-      if (e < 0 && errno != EINTR && errno != EAGAIN)
-	die("pipe read: %m");
+  if ((poll(&pfd, 1, poll_tout) < 0) && (errno != EINTR) && (errno != EAGAIN))
+    die("poll: %m");
 
-      DBG("main loop pipe drain: %d\n", e);
+  char buf[64];
+  int e = read(loop->fds[0], buf, 64);
+  if (e < 0 && errno != EINTR && errno != EAGAIN)
+    die("pipe read: %m");
 
-      if (async_config_flag)
-	{
-	  io_log_event(async_config, NULL);
-	  async_config();
-	  async_config_flag = 0;
-	}
-
-      if (async_dump_flag)
-	{
-	  io_log_event(async_dump, NULL);
-	  async_dump();
-	  async_dump_flag = 0;
-	}
-
-      if (async_shutdown_flag)
-	{
-	  io_log_event(async_shutdown, NULL);
-	  async_shutdown();
-	  async_shutdown_flag = 0;
-	}
-
-      times_update(&main_timeloop);
-      timers_fire(&main_timeloop);
-      io_close_event();
-    }
+  DBG("timer loop pipe drain: %d\n", e);
 }
 
 void

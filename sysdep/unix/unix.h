@@ -99,13 +99,9 @@ int sockaddr_read(sockaddr *sa, int af, ip_addr *a, struct iface **ifa, uint *po
 #define SUN_LEN(ptr) ((size_t) (((struct sockaddr_un *) 0)->sun_path) + strlen ((ptr)->sun_path))
 #endif
 
-extern volatile sig_atomic_t async_config_flag;
-extern volatile sig_atomic_t async_dump_flag;
-extern volatile sig_atomic_t async_shutdown_flag;
-
 void io_init(void);
 void io_loop(void);
-void io_log_dump(void);
+//void io_log_dump(void);
 int sk_open_unix(struct birdsock *s, char *name);
 struct rfile *rf_open(struct pool *, const char *name, const char *mode);
 void *rf_file(struct rfile *f);
