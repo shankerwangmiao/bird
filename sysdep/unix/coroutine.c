@@ -196,7 +196,7 @@ extern char *sk_type_names[];
 void
 ev_dump(event *e)
 {
-  LOCKED_DO(event_state, &event_state_domain)
+  EVENT_LOCKED
   {
     AUTO_TYPE eu = UNLOCKED_STRUCT(event_state, e);
     debug(EV_DEBUG_FMT, EV_DEBUG_ARGS(e, eu));

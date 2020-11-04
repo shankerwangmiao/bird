@@ -42,37 +42,36 @@ struct domain_generic *domain_new(const char *name);
 void domain_free_after_unlock(struct domain_generic *dg);
 
 /* Pass a locked context to a subfunction */
-#define LOCKED(type) DOMAIN(type) *_bird_current_lock
+#define LOCKED(type) DOMAIN(type) _bird_current_lock
 #define CURRENT_LOCK _bird_current_lock
-#define ASSERT_LOCK(d) ASSERT_DIE(_bird_current_lock == (d))
+#define ASSERT_LOCK(type, d) ASSERT_DIE(_bird_current_lock.type == (d).type)
 
 /* Uncoupled lock/unlock, don't use directly */
-#define LOCK_DOMAIN(type, d)	LOCKED(type) = (do_lock((d)->type, &(locking_stack.type)), (d))
-#define UNLOCK_DOMAIN(type, d)  do_unlock((d)->type, &(locking_stack.type))
+#define LOCK_DOMAIN(type, d)	LOCKED(type) = (do_lock(((d).type), &(locking_stack.type)), (d))
+#define UNLOCK_DOMAIN(type, d)  do_unlock(((d).type), &(locking_stack.type))
 
 /* Do something in a locked context */
 #define LOCKED_DO(type, d) for ( \
-    LOCK_DOMAIN(type, d), *_bird_aux = (d); \
-    _bird_aux ? ((_bird_aux = NULL), 1) : 0; \
+    LOCK_DOMAIN(type, d), _bird_aux = (d); \
+    _bird_aux.type ? ((_bird_aux.type = NULL), 1) : 0; \
     UNLOCK_DOMAIN(type, d))
 
 /* Part of struct that should be accessed only with a locked lock */
 #define LOCKED_STRUCT(lock_type, ...) struct { \
   __VA_ARGS__ \
-  DOMAIN(lock_type) *_lock; \
+  DOMAIN(lock_type) _lock; \
 } LOCKED_STRUCT_NAME(lock_type)
 
 #define LOCKED_STRUCT_INIT_LOCK(lock_type, parent, domain) ({ \
     AUTO_TYPE _str = &(parent)->LOCKED_STRUCT_NAME(lock_type); \
-    ASSERT_DIE(!_str->_lock); \
+    ASSERT_DIE(!_str->_lock.lock_type); \
     _str->_lock = domain; \
     })
 
 /* Locked struct accessor */
 #define UNLOCKED_STRUCT(lock_type, parent) ({ \
     AUTO_TYPE _str = &(parent)->LOCKED_STRUCT_NAME(lock_type); \
-    ASSERT_DIE(_str->_lock); \
-    ASSERT_LOCK(_str->_lock); \
+    ASSERT_LOCK(lock_type, _str->_lock); \
     _str; })
 
 /* Lock, get single item, unlock */
@@ -110,11 +109,11 @@ void domain_free_after_unlock(struct domain_generic *dg);
 DEFINE_DOMAIN(event_state);
 extern DOMAIN(event_state) event_state_domain;
 
-#define EVENT_LOCKED LOCKED_DO(event_state, &event_state_domain)
-#define EVENT_LOCKED_GET(str, var)  LOCKED_GET(event_state, str, &event_state_domain, var)
-#define EVENT_LOCKED_SET(str, var, val)  LOCKED_SET(event_state, str, &event_state_domain, var, val)
-#define EVENT_LOCKED_INIT(str, ...) LOCKED_STRUCT_INIT(event_state, str, &event_state_domain, __VA_ARGS__)
-#define EVENT_LOCKED_INIT_LOCK(str) LOCKED_STRUCT_INIT_LOCK(event_state, str, &event_state_domain)
+#define EVENT_LOCKED LOCKED_DO(event_state, event_state_domain)
+#define EVENT_LOCKED_GET(str, var)  LOCKED_GET(event_state, str, event_state_domain, var)
+#define EVENT_LOCKED_SET(str, var, val)  LOCKED_SET(event_state, str, event_state_domain, var, val)
+#define EVENT_LOCKED_INIT(str, ...) LOCKED_STRUCT_INIT(event_state, str, event_state_domain, __VA_ARGS__)
+#define EVENT_LOCKED_INIT_LOCK(str) LOCKED_STRUCT_INIT_LOCK(event_state, str, event_state_domain)
 
 DEFINE_DOMAIN(the_bird);
 extern DOMAIN(the_bird) the_bird_domain;
@@ -123,9 +122,9 @@ extern DOMAIN(the_bird) the_bird_domain;
 #define the_bird_unlock()	do_unlock(the_bird_domain.the_bird, &locking_stack.the_bird)
 
 #define THE_BIRD_LOCKED		for ( \
-    UNUSED LOCK_DOMAIN(the_bird, &the_bird_domain), *_bird_aux = (&the_bird_domain); \
+    UNUSED LOCK_DOMAIN(the_bird, the_bird_domain), *_bird_aux = (&the_bird_domain); \
     _bird_aux ? ((_bird_aux = NULL), 1) : 0; \
-    UNLOCK_DOMAIN(the_bird, &the_bird_domain))
+    UNLOCK_DOMAIN(the_bird, the_bird_domain))
 
 #define assert_bird_lock()	ASSERT_DIE(locking_stack.the_bird == the_bird_domain.the_bird)
 
