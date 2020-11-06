@@ -100,7 +100,7 @@
  * - RFC 5883 - BFD for multihop paths
  */
 
-#include "bfd.h"
+#include "proto/bfd/bfd.h"
 
 
 #define HASH_ID_KEY(n)		n->loc_id
@@ -121,7 +121,6 @@ const char *bfd_state_names[] = { "AdminDown", "Down", "Init", "Up" };
 static void bfd_session_set_min_tx(struct bfd_session *s, u32 val);
 static struct bfd_iface *bfd_get_iface(struct bfd_proto *p, ip_addr local, struct iface *iface);
 static void bfd_free_iface(struct bfd_iface *ifa);
-static inline void bfd_notify_kick(struct bfd_proto *p);
 
 
 /*
@@ -158,7 +157,7 @@ bfd_session_update_state(struct bfd_session *s, uint state, uint diag)
     bfd_session_set_min_tx(s, s->ifa->cf->idle_tx_int);
 
   if (notify)
-    bfd_notify_kick(p);
+    ev_schedule(&p->notify_event);
 }
 
 static void
@@ -405,10 +404,8 @@ bfd_get_free_id(struct bfd_proto *p)
 }
 
 static struct bfd_session *
-bfd_add_session(struct bfd_proto *p, ip_addr addr, ip_addr local, struct iface *iface)
+bfd_add_session(LOCKED(bfd) UNUSED, struct bfd_proto *p, ip_addr addr, ip_addr local, struct iface *iface)
 {
-  birdloop_enter(p->loop);
-
   struct bfd_iface *ifa = bfd_get_iface(p, local, iface);
 
   struct bfd_session *s = sl_alloc(p->session_slab);
@@ -432,8 +429,8 @@ bfd_add_session(struct bfd_proto *p, ip_addr addr, ip_addr local, struct iface *
   s->passive = ifa->cf->passive;
   s->tx_csn = random_u32();
 
-  s->tx_timer = tm_new_init(p->tpool, bfd_tx_timer_hook, s, 0, 0);
-  s->hold_timer = tm_new_init(p->tpool, bfd_hold_timer_hook, s, 0, 0);
+  s->tx_timer = tm_new_init(p->p.pool, bfd_tx_timer_hook, s, 0, 0);
+  s->hold_timer = tm_new_init(p->p.pool, bfd_hold_timer_hook, s, 0, 0);
   bfd_session_update_tx_interval(s);
   bfd_session_control_tx_timer(s, 1);
 
@@ -442,46 +439,15 @@ bfd_add_session(struct bfd_proto *p, ip_addr addr, ip_addr local, struct iface *
 
   TRACE(D_EVENTS, "Session to %I added", s->addr);
 
-  birdloop_leave(p->loop);
-
   return s;
 }
 
-/*
 static void
-bfd_open_session(struct bfd_proto *p, struct bfd_session *s, ip_addr local, struct iface *ifa)
-{
-  birdloop_enter(p->loop);
-
-  s->opened = 1;
-
-  bfd_session_control_tx_timer(s);
-
-  birdloop_leave(p->loop);
-}
-
-static void
-bfd_close_session(struct bfd_proto *p, struct bfd_session *s)
-{
-  birdloop_enter(p->loop);
-
-  s->opened = 0;
-
-  bfd_session_update_state(s, BFD_STATE_DOWN, BFD_DIAG_PATH_DOWN);
-  bfd_session_control_tx_timer(s);
-
-  birdloop_leave(p->loop);
-}
-*/
-
-static void
-bfd_remove_session(struct bfd_proto *p, struct bfd_session *s)
+bfd_remove_session(LOCKED(bfd) UNUSED, struct bfd_proto *p, struct bfd_session *s)
 {
   ip_addr ip = s->addr;
 
   /* Caller should ensure that request list is empty */
-
-  birdloop_enter(p->loop);
 
   /* Remove session from notify list if scheduled for notification */
   /* No need for bfd_lock_sessions(), we are already protected by birdloop_enter() */
@@ -499,15 +465,11 @@ bfd_remove_session(struct bfd_proto *p, struct bfd_session *s)
   sl_free(p->session_slab, s);
 
   TRACE(D_EVENTS, "Session to %I removed", ip);
-
-  birdloop_leave(p->loop);
 }
 
 static void
-bfd_reconfigure_session(struct bfd_proto *p, struct bfd_session *s)
+bfd_reconfigure_session(LOCKED(bfd) UNUSED, struct bfd_proto *p, struct bfd_session *s)
 {
-  birdloop_enter(p->loop);
-
   struct bfd_iface_config *cf = s->ifa->cf;
 
   u32 tx = (s->loc_state == BFD_STATE_UP) ? cf->min_tx_int : cf->idle_tx_int;
@@ -517,8 +479,6 @@ bfd_reconfigure_session(struct bfd_proto *p, struct bfd_session *s)
   s->passive = cf->passive;
 
   bfd_session_control_tx_timer(s, 0);
-
-  birdloop_leave(p->loop);
 
   TRACE(D_EVENTS, "Session to %I reconfigured", s->addr);
 }
@@ -557,7 +517,7 @@ bfd_get_iface(struct bfd_proto *p, ip_addr local, struct iface *iface)
   struct bfd_config *cf = (struct bfd_config *) (p->p.cf);
   struct bfd_iface_config *ic = bfd_find_iface_config(cf, iface);
 
-  ifa = mb_allocz(p->tpool, sizeof(struct bfd_iface));
+  ifa = mb_allocz(p->p.pool, sizeof(struct bfd_iface));
   ifa->local = local;
   ifa->iface = iface;
   ifa->cf = ic;
@@ -578,10 +538,7 @@ bfd_free_iface(struct bfd_iface *ifa)
     return;
 
   if (ifa->sk)
-  {
-    sk_stop(ifa->sk);
-    rfree(ifa->sk);
-  }
+    sk_close(ifa->sk);
 
   rem_node(&ifa->n);
   mb_free(ifa);
@@ -594,9 +551,8 @@ bfd_reconfigure_iface(struct bfd_proto *p, struct bfd_iface *ifa, struct bfd_con
   ifa->changed = !!memcmp(nic, ifa->cf, sizeof(struct bfd_iface_config));
 
   /* This should be probably changed to not access ifa->cf from the BFD thread */
-  birdloop_enter(p->loop);
-  ifa->cf = nic;
-  birdloop_leave(p->loop);
+  LOCKED_DO(bfd, p->domain)
+    ifa->cf = nic;
 }
 
 
@@ -639,7 +595,8 @@ bfd_add_request(struct bfd_proto *p, struct bfd_request *req)
   u8 state, diag;
 
   if (!s)
-    s = bfd_add_session(p, req->addr, req->local, req->iface);
+    LOCKED_DO(bfd, p->domain)
+      s = bfd_add_session(CURRENT_LOCK, p, req->addr, req->local, req->iface);
 
   rem_node(&req->n);
   add_tail(&s->request_list, &req->n);
@@ -680,15 +637,25 @@ bfd_take_requests(struct bfd_proto *p)
 }
 
 static void
-bfd_drop_requests(struct bfd_proto *p)
+bfd_release_requests(LOCKED(bfd) UNUSED, struct bfd_proto *p, list *release)
 {
-  node *n;
-
-  HASH_WALK(p->session_hash_id, next_id, s)
+  HASH_WALK_DELSAFE(p->session_hash_id, next_id, s)
   {
-    /* We assume that p is not in bfd_proto_list */
+    node *n;
+
     WALK_LIST_FIRST(n, s->request_list)
-      bfd_submit_request(SKIP_BACK(struct bfd_request, n, n));
+    {
+      struct bfd_request *r = SKIP_BACK(struct bfd_request, n, n);
+
+      bfd_lock_sessions(p);
+      rem_node(&r->n);
+      bfd_unlock_sessions(p);
+      add_tail(release, &r->n);
+
+      r->session = NULL;
+    }
+
+    bfd_remove_session(CURRENT_LOCK, p, s);
   }
   HASH_WALK_END;
 }
@@ -730,7 +697,8 @@ bfd_request_free(resource *r)
      inside notify hooks, will be handled by bfd_notify_hook() itself */
 
   if (s && EMPTY_LIST(s->request_list) && !s->notify_running)
-    bfd_remove_session(s->ifa->bfd, s);
+    LOCKED_DO(bfd, s->ifa->bfd->domain)
+      bfd_remove_session(CURRENT_LOCK, s->ifa->bfd, s);
 }
 
 static void
@@ -859,25 +827,17 @@ bfd_reconfigure_neighbors(struct bfd_proto *p, struct bfd_config *new)
 
 
 /*
- *	BFD notify socket
+ *	BFD notify event
  */
 
-/* This core notify code should be replaced after main loop transition to birdloop */
-
-int pipe(int pipefd[2]);
-void pipe_drain(int fd);
-void pipe_kick(int fd);
-
-static int
-bfd_notify_hook(sock *sk, uint len UNUSED)
+static void
+bfd_notify_hook(void *P)
 {
-  struct bfd_proto *p = sk->data;
+  struct bfd_proto *p = P;
   struct bfd_session *s;
   list tmp_list;
   u8 state, diag;
   node *n, *nn;
-
-  pipe_drain(sk->fd);
 
   bfd_lock_sessions(p);
   init_list(&tmp_list);
@@ -900,54 +860,35 @@ bfd_notify_hook(sock *sk, uint len UNUSED)
 
     /* Remove the session if all requests were removed in notify hooks */
     if (EMPTY_LIST(s->request_list))
-      bfd_remove_session(p, s);
+      LOCKED_DO(bfd, p->domain)
+	bfd_remove_session(CURRENT_LOCK, p, s);
+  }
+}
+
+static void
+bfd_timer_loop(void *P)
+{
+  struct bfd_proto *p = P;
+
+  timeloop_current = &p->loop;
+
+  while (!ev_get_cancelled()) {
+    timers_wait(timeloop_current);
+
+    LOCKED_DO(bfd, p->domain)
+      if (!ev_get_cancelled())
+	timers_fire(timeloop_current);
   }
 
-  return 0;
-}
+  LOCKED_DO(bfd, p->domain)
+  {
+    DOMAIN_FREE_AFTER_UNLOCK(bfd, p->domain);
+  }
 
-static inline void
-bfd_notify_kick(struct bfd_proto *p)
-{
-  pipe_kick(p->notify_ws->fd);
-}
+  p->domain = DOMAIN_NULL(bfd);
 
-static void
-bfd_noterr_hook(sock *sk, int err)
-{
-  struct bfd_proto *p = sk->data;
-  log(L_ERR "%s: Notify socket error: %m", p->p.name, err);
-}
-
-static void
-bfd_notify_init(struct bfd_proto *p)
-{
-  int pfds[2];
-  sock *sk;
-
-  int rv = pipe(pfds);
-  if (rv < 0)
-    die("pipe: %m");
-
-  sk = sk_new(p->p.pool);
-  sk->type = SK_MAGIC;
-  sk->rx_hook = bfd_notify_hook;
-  sk->err_hook = bfd_noterr_hook;
-  sk->fd = pfds[0];
-  sk->data = p;
-  if (sk_open(sk) < 0)
-    die("bfd: sk_open failed");
-  p->notify_rs = sk;
-
-  /* The write sock is not added to any event loop */
-  sk = sk_new(p->p.pool);
-  sk->type = SK_MAGIC;
-  sk->fd = pfds[1];
-  sk->data = p;
-  sk->flags = SKF_THREAD;
-  if (sk_open(sk) < 0)
-    die("bfd: sk_open failed");
-  p->notify_ws = sk;
+  THE_BIRD_LOCKED
+    proto_notify_state(&p->p, PS_DOWN);
 }
 
 
@@ -978,9 +919,11 @@ bfd_start(struct proto *P)
   struct bfd_proto *p = (struct bfd_proto *) P;
   struct bfd_config *cf = (struct bfd_config *) (P->cf);
 
-  p->loop = birdloop_new();
-  p->tpool = rp_new(NULL, "BFD thread root");
+  memset(&p->loop, 0, sizeof(struct timeloop));
+  timers_init(&p->loop, p->p.pool, P->name);
+
   pthread_spin_init(&p->lock, PTHREAD_PROCESS_PRIVATE);
+  p->domain = DOMAIN_NEW(bfd, P->name);
 
   p->session_slab = sl_new(P->pool, sizeof(struct bfd_session));
   HASH_INIT(p->session_hash_id, P->pool, 8);
@@ -989,25 +932,26 @@ bfd_start(struct proto *P)
   init_list(&p->iface_list);
 
   init_list(&p->notify_list);
-  bfd_notify_init(p);
+
+  memset(&p->notify_event, 0, sizeof(event));
+  ev_setup(&p->notify_event, bfd_notify_hook, p);
 
   add_tail(&bfd_proto_list, &p->bfd_node);
 
-  birdloop_enter(p->loop);
+  LOCKED_DO(bfd, p->domain)
+  {
+    if (cf->accept_ipv4 && cf->accept_direct)
+      p->rx4_1 = bfd_open_rx_sk(p, 0, SK_IPV4);
 
-  if (cf->accept_ipv4 && cf->accept_direct)
-    p->rx4_1 = bfd_open_rx_sk(p, 0, SK_IPV4);
+    if (cf->accept_ipv4 && cf->accept_multihop)
+      p->rx4_m = bfd_open_rx_sk(p, 1, SK_IPV4);
 
-  if (cf->accept_ipv4 && cf->accept_multihop)
-    p->rx4_m = bfd_open_rx_sk(p, 1, SK_IPV4);
+    if (cf->accept_ipv6 && cf->accept_direct)
+      p->rx6_1 = bfd_open_rx_sk(p, 0, SK_IPV6);
 
-  if (cf->accept_ipv6 && cf->accept_direct)
-    p->rx6_1 = bfd_open_rx_sk(p, 0, SK_IPV6);
-
-  if (cf->accept_ipv6 && cf->accept_multihop)
-    p->rx6_m = bfd_open_rx_sk(p, 1, SK_IPV6);
-
-  birdloop_leave(p->loop);
+    if (cf->accept_ipv6 && cf->accept_multihop)
+      p->rx6_m = bfd_open_rx_sk(p, 1, SK_IPV6);
+  }
 
   bfd_take_requests(p);
 
@@ -1015,7 +959,9 @@ bfd_start(struct proto *P)
   WALK_LIST(n, cf->neigh_list)
     bfd_start_neighbor(p, n);
 
-  birdloop_start(p->loop);
+  memset(&p->timer_loop, 0, sizeof(event));
+  ev_setup_unlocked(&p->timer_loop, bfd_timer_loop, p);
+  ev_schedule(&p->timer_loop);
 
   return PS_UP;
 }
@@ -1029,22 +975,52 @@ bfd_shutdown(struct proto *P)
 
   rem_node(&p->bfd_node);
 
-  birdloop_stop(p->loop);
+  list drop_requests;
+  init_list(&drop_requests);
 
-  struct bfd_neighbor *n;
-  WALK_LIST(n, cf->neigh_list)
-    bfd_stop_neighbor(p, n);
+  LOCKED_DO(bfd, p->domain)
+  {
+    ev_cancel(&p->timer_loop);
+    timers_ping(&p->loop);
 
-  bfd_drop_requests(p);
+    if (p->rx4_1)
+    {
+      sk_close(p->rx4_1);
+      p->rx4_1 = NULL;
+    }
 
-  /* FIXME: This is hack */
-  birdloop_enter(p->loop);
-  rfree(p->tpool);
-  birdloop_leave(p->loop);
+    if (p->rx4_m)
+    {
+      sk_close(p->rx4_m);
+      p->rx4_m = NULL;
+    }
 
-  birdloop_free(p->loop);
+    if (p->rx6_1)
+    {
+      sk_close(p->rx6_1);
+      p->rx6_1 = NULL;
+    }
 
-  return PS_DOWN;
+    if (p->rx6_m)
+    {
+      sk_close(p->rx6_m);
+      p->rx6_m = NULL;
+    }
+
+    struct bfd_neighbor *n;
+    WALK_LIST(n, cf->neigh_list)
+      bfd_stop_neighbor(p, n);
+
+    bfd_release_requests(CURRENT_LOCK, p, &drop_requests);
+  }
+
+  node *n;
+  WALK_LIST_FIRST(n, drop_requests)
+    bfd_submit_request(SKIP_BACK(struct bfd_request, n, n));
+
+  pthread_spin_destroy(&p->lock);
+
+  return PS_STOP;
 }
 
 static int
@@ -1062,21 +1038,18 @@ bfd_reconfigure(struct proto *P, struct proto_config *c)
       (new->accept_multihop != old->accept_multihop))
     return 0;
 
-  birdloop_mask_wakeups(p->loop);
-
   WALK_LIST(ifa, p->iface_list)
     bfd_reconfigure_iface(p, ifa, new);
 
   HASH_WALK(p->session_hash_id, next_id, s)
   {
     if (s->ifa->changed)
-      bfd_reconfigure_session(p, s);
+      LOCKED_DO(bfd, p->domain)
+	bfd_reconfigure_session(CURRENT_LOCK, p, s);
   }
   HASH_WALK_END;
 
   bfd_reconfigure_neighbors(p, new);
-
-  birdloop_unmask_wakeups(p->loop);
 
   return 1;
 }

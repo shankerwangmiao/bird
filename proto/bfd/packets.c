@@ -4,7 +4,7 @@
  *	Can be freely distributed and used under the terms of the GNU GPL.
  */
 
-#include "bfd.h"
+#include "proto/bfd/bfd.h"
 #include "lib/mac.h"
 
 
@@ -284,13 +284,12 @@ void
 bfd_send_ctl(struct bfd_proto *p, struct bfd_session *s, int final)
 {
   sock *sk = s->ifa->sk;
-  struct bfd_ctl_packet *pkt;
+  struct bfd_ctl_packet spkt, *pkt = &spkt;
   char fb[8];
 
   if (!sk)
     return;
 
-  pkt = (struct bfd_ctl_packet *) sk->tbuf;
   pkt->vdiag = bfd_pack_vdiag(1, s->loc_diag);
   pkt->flags = bfd_pack_flags(s->loc_state, 0);
   pkt->detect_mult = s->detect_mult;
@@ -309,23 +308,74 @@ bfd_send_ctl(struct bfd_proto *p, struct bfd_session *s, int final)
   if (s->ifa->cf->auth_type)
     bfd_fill_authentication(p, s, pkt);
 
-  if (sk->tbuf != sk->tpos)
-    log(L_WARN "%s: Old packet overwritten in TX buffer", p->p.name);
-
   TRACE(D_PACKETS, "Sending CTL to %I [%s%s]", s->addr,
 	bfd_state_names[s->loc_state], bfd_format_flags(pkt->flags, fb));
 
-  sk_send_to(sk, pkt->length, s->addr, sk->dport);
+  if (sk_send_to(sk, pkt, pkt->length, s->addr, sk->dport) <= 0)
+    log(L_WARN "%s: packet not sent immediately", p->p.name);
 }
 
-static int
-bfd_rx_hook(sock *sk, uint len)
+static void
+bfd_update_session(LOCKED(bfd) UNUSED, struct bfd_proto *p, sock *sk, struct bfd_ctl_packet *pkt)
 {
-  struct bfd_proto *p =  sk->data;
-  struct bfd_ctl_packet *pkt = (struct bfd_ctl_packet *) sk->rbuf;
+  struct bfd_session *s;
+  u32 id = ntohl(pkt->rcv_id);
   const char *err_dsc = NULL;
   uint err_val = 0;
   char fb[8];
+
+  if (id)
+  {
+    s = bfd_find_session_by_id(p, id);
+
+    if (!s)
+      DROP("unknown session id", id);
+  }
+  else
+  {
+    u8 ps = bfd_pkt_get_state(pkt);
+    if (ps > BFD_STATE_DOWN)
+      DROP("invalid init state", ps);
+
+    s = bfd_find_session_by_addr(p, sk->faddr);
+
+    /* FIXME: better session matching and message */
+    if (!s)
+      return;
+  }
+
+  /* bfd_check_authentication() has its own error logging */
+  if (!bfd_check_authentication(p, s, pkt))
+    return;
+
+  u32 old_tx_int = s->des_min_tx_int;
+  u32 old_rx_int = s->rem_min_rx_int;
+
+  s->rem_id = ntohl(pkt->snd_id);
+  s->rem_state = bfd_pkt_get_state(pkt);
+  s->rem_diag = bfd_pkt_get_diag(pkt);
+  s->rem_demand_mode = pkt->flags & BFD_FLAG_DEMAND;
+  s->rem_min_tx_int = ntohl(pkt->des_min_tx_int);
+  s->rem_min_rx_int = ntohl(pkt->req_min_rx_int);
+  s->rem_detect_mult = pkt->detect_mult;
+
+  TRACE(D_PACKETS, "CTL received from %I [%s%s]", sk->faddr,
+	bfd_state_names[s->rem_state], bfd_format_flags(pkt->flags, fb));
+
+  bfd_session_process_ctl(s, pkt->flags, old_tx_int, old_rx_int);
+  return;
+
+drop:
+  LOG_PKT("Bad packet from %I - %s (%u)", sk->faddr, err_dsc, err_val);
+}
+
+static uint
+bfd_rx_hook(sock *sk, byte *buf, uint len)
+{
+  struct bfd_proto *p = sk->data;
+  struct bfd_ctl_packet *pkt = (void *) buf;
+  const char *err_dsc = NULL;
+  uint err_val = 0;
 
   if ((sk->sport == BFD_CONTROL_PORT) && (sk->rcv_ttl < 255))
     DROP("wrong TTL", sk->rcv_ttl);
@@ -350,48 +400,9 @@ bfd_rx_hook(sock *sk, uint len)
   if (pkt->snd_id == 0)
     DROP("invalid my discriminator", 0);
 
-  struct bfd_session *s;
-  u32 id = ntohl(pkt->rcv_id);
+  LOCKED_DO(bfd, p->domain)
+    bfd_update_session(CURRENT_LOCK, p, sk, pkt);
 
-  if (id)
-  {
-    s = bfd_find_session_by_id(p, id);
-
-    if (!s)
-      DROP("unknown session id", id);
-  }
-  else
-  {
-    u8 ps = bfd_pkt_get_state(pkt);
-    if (ps > BFD_STATE_DOWN)
-      DROP("invalid init state", ps);
-
-    s = bfd_find_session_by_addr(p, sk->faddr);
-
-    /* FIXME: better session matching and message */
-    if (!s)
-      return 1;
-  }
-
-  /* bfd_check_authentication() has its own error logging */
-  if (!bfd_check_authentication(p, s, pkt))
-    return 1;
-
-  u32 old_tx_int = s->des_min_tx_int;
-  u32 old_rx_int = s->rem_min_rx_int;
-
-  s->rem_id= ntohl(pkt->snd_id);
-  s->rem_state = bfd_pkt_get_state(pkt);
-  s->rem_diag = bfd_pkt_get_diag(pkt);
-  s->rem_demand_mode = pkt->flags & BFD_FLAG_DEMAND;
-  s->rem_min_tx_int = ntohl(pkt->des_min_tx_int);
-  s->rem_min_rx_int = ntohl(pkt->req_min_rx_int);
-  s->rem_detect_mult = pkt->detect_mult;
-
-  TRACE(D_PACKETS, "CTL received from %I [%s%s]", sk->faddr,
-	bfd_state_names[s->rem_state], bfd_format_flags(pkt->flags, fb));
-
-  bfd_session_process_ctl(s, pkt->flags, old_tx_int, old_rx_int);
   return 1;
 
 drop:
@@ -406,29 +417,38 @@ bfd_err_hook(sock *sk, int err)
   log(L_ERR "%s: Socket error: %m", p->p.name, err);
 }
 
+static void
+bfd_rx_cli(LOCKED(event_state) UNUSED, struct birdsock *s, char *buf, uint len)
+{
+  bsnprintf(buf, len, "for %s %s rx at port %d", s->owner->name, (s->subtype == SK_IPV4) ? "ipv4" : "ipv6", s->sport);
+}
+
 sock *
 bfd_open_rx_sk(struct bfd_proto *p, int multihop, int af)
 {
-  sock *sk = sk_new(p->tpool);
+  sock *sk = sk_new(p->p.pool);
   sk->type = SK_UDP;
   sk->subtype = af;
   sk->sport = !multihop ? BFD_CONTROL_PORT : BFD_MULTI_CTL_PORT;
   sk->vrf = p->p.vrf;
   sk->data = p;
 
-  sk->rbsize = BFD_MAX_LEN;
-  sk->rx_hook = bfd_rx_hook;
-  sk->err_hook = bfd_err_hook;
+  EVENT_LOCKED_INIT(sk, 
+      .rbsize = BFD_MAX_LEN,
+      .rx_hook = bfd_rx_hook,
+      .rx_err = bfd_err_hook,
+      .cli_info = bfd_rx_cli,
+      );
 
   /* TODO: configurable ToS and priority */
   sk->tos = IP_PREC_INTERNET_CONTROL;
   sk->priority = sk_priority_control;
-  sk->flags = SKF_THREAD | SKF_LADDR_RX | (!multihop ? SKF_TTL_RX : 0);
+  sk->flags = SKF_NOLOCK | SKF_LADDR_RX | (!multihop ? SKF_TTL_RX : 0);
 
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, &p->p) < 0)
     goto err;
 
-  sk_start(sk);
+  sk_schedule_rx(sk);
   return sk;
 
  err:
@@ -437,10 +457,16 @@ bfd_open_rx_sk(struct bfd_proto *p, int multihop, int af)
   return NULL;
 }
 
+static void
+bfd_tx_cli(LOCKED(event_state) UNUSED, struct birdsock *s, char *buf, uint len)
+{
+  bsnprintf(buf, len, "for %s tx from %I%J to port %d", s->owner->name, s->saddr, s->iface, s->dport);
+}
+
 sock *
 bfd_open_tx_sk(struct bfd_proto *p, ip_addr local, struct iface *ifa)
 {
-  sock *sk = sk_new(p->tpool);
+  sock *sk = sk_new(p->p.pool);
   sk->type = SK_UDP;
   sk->saddr = local;
   sk->dport = ifa ? BFD_CONTROL_PORT : BFD_MULTI_CTL_PORT;
@@ -448,19 +474,20 @@ bfd_open_tx_sk(struct bfd_proto *p, ip_addr local, struct iface *ifa)
   sk->vrf = p->p.vrf;
   sk->data = p;
 
-  sk->tbsize = BFD_MAX_LEN;
-  sk->err_hook = bfd_err_hook;
+  EVENT_LOCKED_INIT(sk,
+      .tx_err = bfd_err_hook,
+      .cli_info = bfd_tx_cli,
+      );
 
   /* TODO: configurable ToS, priority and TTL security */
   sk->tos = IP_PREC_INTERNET_CONTROL;
   sk->priority = sk_priority_control;
   sk->ttl = ifa ? 255 : -1;
-  sk->flags = SKF_THREAD | SKF_BIND | SKF_HIGH_PORT;
+  sk->flags = SKF_NOLOCK | SKF_BIND | SKF_HIGH_PORT;
 
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, &p->p) < 0)
     goto err;
 
-  sk_start(sk);
   return sk;
 
  err:

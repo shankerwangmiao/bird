@@ -22,8 +22,6 @@
 #include "lib/string.h"
 
 #include "nest/bfd.h"
-#include "io.h"
-
 
 #define BFD_CONTROL_PORT	3784
 #define BFD_ECHO_PORT		3785
@@ -78,7 +76,8 @@ struct bfd_neighbor
 struct bfd_proto
 {
   struct proto p;
-  struct birdloop *loop;
+  DOMAIN(bfd) domain;
+  struct timeloop loop;
   pool *tpool;
   pthread_spinlock_t lock;
   node bfd_node;
@@ -87,15 +86,16 @@ struct bfd_proto
   HASH(struct bfd_session) session_hash_id;
   HASH(struct bfd_session) session_hash_ip;
 
-  sock *notify_rs;
-  sock *notify_ws;
   list notify_list;
+  event notify_event;
 
   sock *rx4_1;
   sock *rx6_1;
   sock *rx4_m;
   sock *rx6_m;
   list iface_list;
+
+  event timer_loop;
 };
 
 struct bfd_iface

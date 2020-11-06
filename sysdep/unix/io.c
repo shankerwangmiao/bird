@@ -40,7 +40,6 @@
 #include "lib/socket.h"
 #include "lib/event.h"
 #include "lib/timer.h"
-#include "lib/timeloop.h"
 #include "lib/string.h"
 #include "nest/iface.h"
 #include "nest/protocol.h"
@@ -938,12 +937,19 @@ sk_setup(sock *s)
   return 0;
 }
 
+#define CALL_NOLOCK(s)	((s)->flags & SKF_NOLOCK)
+
+#define THE_BIRD_LOCKED_CALL(s, what) ({ \
+    if (CALL_NOLOCK(s)) what; \
+    else THE_BIRD_LOCKED what; \
+    })
+
 #define CALL_ERR_TBL(s, hook, e) ({ \
     AUTO_TYPE _hook = EVENT_LOCKED_GET(s, hook); \
     if (_hook) _hook(s, e); })
     
 #define CALL_ERR(s, hook, e, tbl) ({ \
-    if (tbl) CALL_ERR_TBL(s, hook, e); \
+    if (tbl || CALL_NOLOCK(s)) CALL_ERR_TBL(s, hook, e); \
     else THE_BIRD_LOCKED CALL_ERR_TBL(s, hook, e); })
 
 #define CALL_RX_ERR(s, arg, tbl) CALL_ERR(s, rx_err, arg, tbl)
@@ -1576,7 +1582,6 @@ sk_recvmsg(sock *s, void *buf, uint len)
 static struct sk_buf *
 sk_buf_store(sock *s, const struct sk_buf *buf)
 {
-  assert_bird_lock();
   struct sk_buf *nb = mb_alloc(s->pool, sizeof(struct sk_buf) + (buf->len - buf->begin));
 
   *nb = (struct sk_buf) {
@@ -1954,11 +1959,11 @@ sk_read(sock *s, struct sock_rx_buf *buf, int revents)
   switch (s->type)
   {
   case SK_TCP_PASSIVE:
-    THE_BIRD_LOCKED sk_passive_connected(s, SK_TCP);
+    THE_BIRD_LOCKED_CALL(s, sk_passive_connected(s, SK_TCP));
     return;
 
   case SK_UNIX_PASSIVE:
-    THE_BIRD_LOCKED sk_passive_connected(s, SK_UNIX);
+    THE_BIRD_LOCKED_CALL(s, sk_passive_connected(s, SK_UNIX));
     return;
 
   case SK_TCP:
@@ -1995,7 +2000,7 @@ sk_read(sock *s, struct sock_rx_buf *buf, int revents)
 #endif
 
   case SK_MAGIC:
-    THE_BIRD_LOCKED CALL_RX_HOOK(s, buf);
+    THE_BIRD_LOCKED_CALL(s, CALL_RX_HOOK(s, buf));
     return;
 
   case SK_IP:
@@ -2011,7 +2016,7 @@ sk_read(sock *s, struct sock_rx_buf *buf, int revents)
       }
       
       buf->pos = e;
-      THE_BIRD_LOCKED CALL_RX_HOOK(s, buf);
+      THE_BIRD_LOCKED_CALL(s, CALL_RX_HOOK(s, buf));
 
       return;
     }
@@ -2021,7 +2026,7 @@ sk_read(sock *s, struct sock_rx_buf *buf, int revents)
   }
 
   uint consumed;
-  THE_BIRD_LOCKED consumed = CALL_RX_HOOK(s, buf);
+  THE_BIRD_LOCKED_CALL(s, consumed = CALL_RX_HOOK(s, buf));
   
   if (consumed < buf->pos)
   {
@@ -2049,7 +2054,7 @@ sk_write(sock *s)
       if (connect(s->fd, &sa.sa, SA_LEN(sa)) >= 0 || errno == EISCONN)
       {
 	sk_tcp_connected(s);
-	THE_BIRD_LOCKED ret = CALL_TX_HOOK(s);
+	THE_BIRD_LOCKED_CALL(s, ret = CALL_TX_HOOK(s));
       }
       else if (errno != EINTR && errno != EAGAIN && errno != EINPROGRESS)
 	CALL_TX_ERR(s, errno, 0);
@@ -2064,7 +2069,7 @@ sk_write(sock *s)
       {
 	case SSH_OK:
 	  s->type = SK_SSH;
-	  THE_BIRD_LOCKED ret = CALL_TX_HOOK(s);
+	  THE_BIRD_LOCKED_CALL(s, ret = CALL_TX_HOOK(s));
 	  return ret;
 
 	case SSH_AGAIN:
@@ -2110,7 +2115,7 @@ sk_write(sock *s)
 	sk_buf_free(buf, 0);
       }
 
-      THE_BIRD_LOCKED ret = CALL_TX_HOOK_IF_EXISTS(s);
+      THE_BIRD_LOCKED_CALL(s, ret = CALL_TX_HOOK_IF_EXISTS(s));
       if (!ret)
 	EVENT_LOCKED
 	  if (!EMPTY_LIST(UNLOCKED_STRUCT(event_state, s)->tx_chain))
@@ -2294,7 +2299,7 @@ watchdog_stop(void)
  *	Main I/O Loop
  */
 
-void
+static void
 pipe_kick(int fd)
 {
   char v = 1;
@@ -2332,7 +2337,7 @@ timers_wait(struct timeloop *loop)
   LOCKED_DO(timer, loop->domain)
   {
     times_update(CURRENT_LOCK, loop);
-    timer *t = timers_first(CURRENT_LOCK, &main_timeloop);
+    timer *t = timers_first(CURRENT_LOCK, loop);
     poll_tout = t ? TM_REMAINS_U(t) TO_MS : -1;
   }
   
@@ -2353,6 +2358,12 @@ timers_wait(struct timeloop *loop)
     die("pipe read: %m");
 
   DBG("timer loop pipe drain: %d\n", e);
+}
+
+void
+timers_ping(struct timeloop *loop)
+{
+  pipe_kick(loop->fds[1]);
 }
 
 void

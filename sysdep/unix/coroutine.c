@@ -56,6 +56,7 @@ struct domain_generic {
   struct domain_generic **prev;
   struct lock_order *locked_by;
   const char *name;
+  _Bool free_after_unlock;
 };
 
 #define DOMAIN_INIT(_name) { .mutex = PTHREAD_MUTEX_INITIALIZER, .name = _name }
@@ -72,6 +73,12 @@ domain_new(const char *name)
   struct domain_generic *dg = xmalloc(sizeof(struct domain_generic));
   *dg = (struct domain_generic) DOMAIN_INIT(name);
   return dg;
+}
+
+void
+domain_free_after_unlock(struct domain_generic *dg)
+{
+  dg->free_after_unlock = 1;
 }
 
 #define EVENT_UNLOCKED for ( \
@@ -108,6 +115,11 @@ void do_unlock(struct domain_generic *dg, struct domain_generic **lsp)
   *lsp = NULL;
   dg->prev = NULL;
   pthread_mutex_unlock(&dg->mutex);
+  if (dg->free_after_unlock)
+  {
+    pthread_mutex_destroy(&dg->mutex);
+    xfree(dg);
+  }
 }
 
 static _Thread_local event *ev_local = NULL;

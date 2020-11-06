@@ -32,19 +32,46 @@ typedef struct timer
       );
 } timer;
 
-struct timeloop;
+struct timeloop
+{
+  DOMAIN(timer) domain;
+
+  btime last_time;
+  btime real_time;
+
+  int fds[2];				/* sysdep specific data */
+
+  LOCKED_STRUCT(timer,
+      BUFFER_(timer *) timers;
+      );
+};
+
+#define TL_TIMERS(tl)		UNLOCKED_STRUCT(timer, tl)->timers
+
+#define TM_EXPIRES_U(t)		UNLOCKED_STRUCT(timer, (t))->expires
+#define TM_REMAINS_U(t)		({ \
+    btime now_ = current_time(); \
+    btime exp_ = TM_EXPIRES_U(t); \
+    exp_ > now_ ? exp_ - now_ : 0; \
+    })
+
+static inline uint timers_count(LOCKED(timer), struct timeloop *loop)
+{ return UNLOCKED_STRUCT(timer, loop)->timers.used - 1; }
+
+static inline timer *timers_first(LOCKED(timer), struct timeloop *loop)
+{
+  AUTO_TYPE timers = &TL_TIMERS(loop);
+  return (timers->used > 1) ? timers->data[1] : NULL;
+}
+
 extern struct timeloop main_timeloop;
 extern _Thread_local struct timeloop *timeloop_current;
 
-/*
-#define TIMELOOP_DO(loop) \
-  for (struct timeloop *tmp = timeloop_current, *_loop = loop; \
-      _loop && (timeloop_current = _loop); \
-      timeloop_current = tmp, _loop = NULL)
-      */
-
 /* Wait for next timer. */
 void timers_wait(struct timeloop *loop);
+
+/* Externally stop timers_wait() */
+void timers_ping(struct timeloop *loop);
 
 btime current_time(void);
 btime current_real_time(void);

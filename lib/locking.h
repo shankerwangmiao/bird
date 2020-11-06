@@ -19,6 +19,7 @@ struct domain_generic;
 #define LOI(type) struct domain_generic *type;
 struct lock_order {
   LOI(the_bird);
+  LOI(bfd);
   LOI(timer);
   LOI(event_state);
 };
@@ -39,8 +40,13 @@ void do_unlock(struct domain_generic *dg, struct domain_generic **lsp);
 #define DOMAIN_NEW(type, name)  (DOMAIN(type)) { .type = domain_new(name) }
 struct domain_generic *domain_new(const char *name);
 
-#define DOMAIN_FREE_AFTER_UNLOCK(type, d) domain_free_after_unlock((d)->type)
+#define DOMAIN_FREE_AFTER_UNLOCK(type, d) ({ \
+    ASSERT_LOCK(type, d); \
+    domain_free_after_unlock((d).type); \
+    })
 void domain_free_after_unlock(struct domain_generic *dg);
+
+#define DOMAIN_NULL(type)   (DOMAIN(type)) {}
 
 /* Pass a locked context to a subfunction */
 #define LOCKED(type) DOMAIN(type) _bird_current_lock

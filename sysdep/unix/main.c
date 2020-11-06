@@ -29,7 +29,6 @@
 #include "lib/socket.h"
 #include "lib/event.h"
 #include "lib/timer.h"
-#include "lib/timeloop.h"
 #include "lib/string.h"
 #include "nest/route.h"
 #include "nest/protocol.h"

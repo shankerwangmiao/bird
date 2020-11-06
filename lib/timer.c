@@ -35,12 +35,9 @@
 #include "lib/heap.h"
 #include "lib/resource.h"
 #include "lib/timer.h"
-#include "lib/timeloop.h"
 
 struct timeloop main_timeloop;
 _Thread_local struct timeloop *timeloop_current;
-
-void wakeup_kick_current(void);
 
 btime
 current_time(void)
@@ -118,8 +115,6 @@ tm_new(pool *p)
   return t;
 }
 
-void pipe_kick(int fd);
-
 static void
 tm_set_unlocked(LOCKED(timer), timer *t, btime when)
 {
@@ -150,7 +145,7 @@ tm_set_unlocked(LOCKED(timer), timer *t, btime when)
   }
 
   if (kick || (timers_first(CURRENT_LOCK, loop) == t))
-    pipe_kick(loop->fds[1]);
+    timers_ping(loop);
 }
 
 void
@@ -207,7 +202,7 @@ tm_stop_unlocked(LOCKED(timer), timer *t)
     tu->expires = 0;
 
     if (kick)
-      pipe_kick(loop->fds[1]);
+      timers_ping(loop);
   }
 }
 

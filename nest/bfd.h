@@ -8,7 +8,10 @@
 #define _BIRD_NBFD_H_
 
 #include "lib/lists.h"
+#include "lib/locking.h"
 #include "lib/resource.h"
+
+DEFINE_DOMAIN(bfd);
 
 struct bfd_session;
 

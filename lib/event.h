@@ -34,22 +34,22 @@ event *ev_new(pool *);
 
 /* Initialize an event; run only if event is inactive. */
 #define ev_setup(e, _hook, _data) ({ \
-    EVENT_LOCKED_INIT_LOCK(e); \
+    EVENT_LOCKED_INIT_LOCK((e)); \
     EVENT_LOCKED { \
       AUTO_TYPE eu = UNLOCKED_STRUCT(event_state, e); \
       ASSERT_DIE(eu->coro == NULL); \
       eu->hook = _hook; \
       eu->data = _data; \
     } \
-    e->name = #_hook; \
-    e->file = __FILE__; \
-    e->line = __LINE__; \
-    e->default_lock = 1; \
+    (e)->name = #_hook; \
+    (e)->file = __FILE__; \
+    (e)->line = __LINE__; \
+    (e)->default_lock = 1; \
     })
 
 #define ev_setup_unlocked(e, _hook, _data) ({ \
     ev_setup(e, _hook, _data); \
-    e->default_lock = 0; \
+    (e)->default_lock = 0; \
     })
 
 /* Create and initialize a new event */

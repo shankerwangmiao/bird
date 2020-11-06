@@ -148,6 +148,7 @@ extern int sk_priority_control;		/* Suggested priority for control traffic, shou
 #define SKF_BIND	0x10	/* Bind datagram socket to given source address */
 #define SKF_HIGH_PORT	0x20	/* Choose port from high range if possible */
 
+#define SKF_NOLOCK	0x100	/* Don't lock the callbacks by the_bird_lock */
 #define SKF_TRUNCATED	0x200	/* Received packet was truncated, set by IO layer */
 #define SKF_HDRINCL	0x400	/* Used internally */
 #define SKF_PKTINFO	0x800	/* Used internally */
