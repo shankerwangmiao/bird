@@ -39,7 +39,8 @@ static char *current_syslog_name; /* NULL -> syslog closed */
 #include <pthread.h>
 
 static pthread_mutex_t log_mutex;
-static inline void log_lock(void) { pthread_mutex_lock(&log_mutex); }
+static pthread_t last_logging_thread;
+static inline void log_lock(void) { pthread_mutex_lock(&log_mutex); last_logging_thread = pthread_self(); }
 static inline void log_unlock(void) { pthread_mutex_unlock(&log_mutex); }
 
 static pthread_t main_thread;
