@@ -584,6 +584,10 @@ rip_iface_stop(struct rip_iface *ifa)
 
   tm_stop(ifa->timer);
   tm_stop(ifa->rxmt_timer);
+
+  sk_close(ifa->sk);
+  ifa->sk = NULL;
+
   ifa->up = 0;
 }
 
@@ -1150,6 +1154,8 @@ rip_shutdown(struct proto *P)
   struct rip_proto *p = (void *) P;
 
   TRACE(D_EVENTS, "Shutdown requested");
+
+  tm_stop(p->timer);
 
   struct rip_iface *ifa;
   WALK_LIST(ifa, p->iface_list)

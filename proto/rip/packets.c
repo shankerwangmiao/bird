@@ -986,6 +986,13 @@ drop:
   return 1;
 }
 
+static void
+rip_cli_info(LOCKED(event_state) UNUSED, struct birdsock *sk, char *buf, uint len)
+{
+  bsnprintf(buf, len, "for %s at %I%J local port %d remote port %d", 
+      sk->owner->name, sk->saddr, sk->iface, sk->sport, sk->dport);
+}
+
 int
 rip_open_socket(struct rip_iface *ifa)
 {
@@ -1005,6 +1012,7 @@ rip_open_socket(struct rip_iface *ifa)
       .tx_hook = rip_tx_hook,
       .rx_err = rip_err_hook,
       .tx_err = rip_err_hook,
+      .cli_info = rip_cli_info,
       );
 
   sk->data = ifa;
