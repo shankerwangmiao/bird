@@ -80,9 +80,9 @@ void domain_free_after_unlock(struct domain_generic *dg);
 
 /* Locked struct accessor */
 #define UNLOCKED_STRUCT(lock_type, parent) ({ \
-    AUTO_TYPE _str = &(parent)->LOCKED_STRUCT_NAME(lock_type); \
-    ASSERT_LOCK(lock_type, _str->_lock); \
-    _str; })
+    AUTO_TYPE _ustr = &(parent)->LOCKED_STRUCT_NAME(lock_type); \
+    ASSERT_LOCK(lock_type, _ustr->_lock); \
+    _ustr; })
 
 /* Lock, get single item, unlock */
 #define LOCKED_GET(type, str, d, var) ({ \
