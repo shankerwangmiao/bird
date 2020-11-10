@@ -338,8 +338,14 @@ case $sysdesc in
 esac
 
 AC_CHECK_HEADERS_ONCE([alloca.h syslog.h])
-AC_CHECK_HEADER([sys/mman.h], [AC_DEFINE([HAVE_MMAP], [1], [Define to 1 if mmap() is available.])])
+AC_CHECK_HEADER([sys/mman.h], [AC_DEFINE([HAVE_MMAP], [1], [Define to 1 if mmap() is available.])], have_mman=no)
+AC_CHECK_FUNC([aligned_alloc], [AC_DEFINE([HAVE_ALIGNED_ALLOC], [1], [Define to 1 if aligned_alloc() is available.])], have_aligned_alloc=no)
 AC_CHECK_MEMBERS([struct sockaddr.sa_len], [], [], [#include <sys/socket.h>])
+
+if test "$have_aligned_alloc" = "no" and test "$have_mman" = "no" ; then
+  AC_MSG_ERROR([No means of aligned alloc found. Need mmap() or aligned_alloc().])
+fi
+
 
 AC_C_BIGENDIAN(
   [AC_DEFINE([CPU_BIG_ENDIAN], [1], [Define to 1 if cpu is big endian])],

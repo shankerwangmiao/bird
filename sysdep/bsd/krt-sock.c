@@ -981,6 +981,12 @@ krt_sock_hook(sock *sk, uint size UNUSED)
 }
 
 static void
+krt_sock_info(LOCKED(event_state) UNUSED, sock *sk UNUSED, char *buf, uint len)
+{
+  bsnprintf(buf, len, "listening to kernel route updates");
+}
+
+static void
 krt_sock_err_hook(sock *sk, int e UNUSED)
 {
   krt_sock_hook(sk, 0);
@@ -1006,15 +1012,20 @@ krt_sock_open(pool *pool, void *data, int table_id UNUSED)
 
   sk = sk_new(pool);
   sk->type = SK_MAGIC;
-  sk->rx_hook = krt_sock_hook;
-  sk->err_hook = krt_sock_err_hook;
+
+  EVENT_LOCKED_INIT(sk,
+      .rx_hook = krt_sock_hook,
+      .cli_info = krt_sock_info,
+      .rx_err = krt_sock_err_hook,
+      );
+
   sk->fd = fd;
   sk->data = data;
 
-  if (sk_open(sk) < 0)
+  if (sk_open(sk, NULL) < 0)
     bug("krt-sock: sk_open failed");
 
-  sk_schedule(sk, 1, 0);
+  sk_schedule_rx(sk);
   return sk;
 }
 
