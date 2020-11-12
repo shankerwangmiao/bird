@@ -114,7 +114,7 @@ ospf_sk_open(struct ospf_iface *ifa)
 {
   struct ospf_proto *p = ifa->oa->po;
 
-  sock *sk = sk_new(ifa->pool);
+  sock *sk = sk_new(p->p.pool);
   sk->type = SK_IP;
   sk->subtype = ospf_is_v2(p) ? SK_IPV4 : SK_IPV6;
   sk->dport = OSPF_PROTO;
@@ -304,6 +304,9 @@ ospf_iface_remove(struct ospf_iface *ifa)
 {
   struct ospf_proto *p = ifa->oa->po;
   int i;
+
+  if (ifa->sk)
+    sk_close(ifa->sk);
 
   if (ifa->type == OSPF_IT_VLINK)
     OSPF_TRACE(D_EVENTS, "Removing vlink to %R via area %R", ifa->vid, ifa->voa->areaid);
