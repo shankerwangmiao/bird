@@ -253,6 +253,10 @@ channel_feed_loop(void *ptr)
   if (c->export_state != ES_FEEDING)
     return;
 
+  /* The protocol has not yet started fully, wait for the proto_event to complete */
+  while (c->proto->do_start)
+    ev_suspend();
+
   ASSERT(!c->feed_active);
   if (c->proto->feed_begin)
     c->proto->feed_begin(c, !c->refeeding);
