@@ -330,11 +330,13 @@ extern list proto_list;
  *		STOP	Protocol is disconnecting from the network.
  *			After it disconnects, it returns to DOWN state.
  *
- *	In:	start()	Called in DOWN state to request protocol startup.
+ *	In:	start()
+ *			Called in DOWN state to request protocol startup.
  *			Returns new state: either UP or START (in this
  *			case, the protocol will notify the core when it
  *			finally comes UP).
- *		stop()	Called in START, UP or STOP state to request
+ *		shutdown()
+ *			Called in START, UP or STOP state to request
  *			protocol shutdown. Returns new state: either
  *			DOWN or STOP (in this case, the protocol will
  *			notify the core when it finally comes DOWN).
