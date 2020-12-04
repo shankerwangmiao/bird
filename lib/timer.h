@@ -15,6 +15,8 @@
 #include "lib/resource.h"
 #include "lib/locking.h"
 
+#include <stdatomic.h>
+
 DEFINE_DOMAIN(timer);
 
 typedef struct timer
@@ -36,8 +38,8 @@ struct timeloop
 {
   DOMAIN(timer) domain;
 
-  btime last_time;
-  btime real_time;
+  _Atomic btime last_time__atomic;
+  _Atomic btime real_time__atomic;
 
   int fds[2];				/* sysdep specific data */
 
@@ -101,8 +103,8 @@ tm_new_init(pool *p, void (*hook)(struct timer *), void *data, uint rec, uint ra
 
 /* In sysdep code */
 void times_init(struct timeloop *loop);
-void times_update(LOCKED(timer), struct timeloop *loop);
-void times_update_real_time(LOCKED(timer), struct timeloop *loop);
+btime times_update(btime current);
+btime times_fetch_real_time(void);
 
 /* For I/O loop */
 void timers_init(struct timeloop *loop, pool *p, const char *name);

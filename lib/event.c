@@ -28,7 +28,18 @@ static void
 ev_free(resource *r)
 {
   event *e = (event *) r;
-  ev_cancel(e);
+  switch (ev_cancel(e, 1))
+  {
+    case EV_CANCEL_STOPPED:
+      BUG_WARN("Stopping event %p (%s inited at %s:%u) from ev_free() called by another coroutine", e, e->name, e->file, e->line);
+      break;
+    case EV_CANCEL_SELF:
+      BUG_WARN("Stopping event %p (%s inited at %s:%u) from ev_free() called by self (!!)", e, e->name, e->file, e->line);
+      break;
+    case EV_CANCEL_NONE:
+      /* Everything is ok! */
+      break;
+  }
 }
 
 static void ev_dump_res(resource *r)

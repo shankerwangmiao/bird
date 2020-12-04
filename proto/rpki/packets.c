@@ -924,17 +924,32 @@ rpki_err_hook(struct birdsock *sk, int error_num)
   rpki_cache_change_state(cache, RPKI_CS_ERROR_TRANSPORT);
 }
 
+static void rpki_established_sock_info(sock *sk, char *buf, uint len)
+{
+  bsnprintf(buf, len, "connected to %I port %d for RPKI %s",
+      sk->daddr, sk->dport, sk->owner->name);
+}
+
+static const struct sock_class rpki_established_sock_class = {
+  .rx_hook = rpki_rx_hook,
+  .tx_err = rpki_err_hook,
+  .rx_err = rpki_err_hook,
+  .cli_info = rpki_established_sock_info,
+};
+
 _Bool
 rpki_connected_hook(sock *sk)
 {
   struct rpki_cache *cache = sk->data;
 
   CACHE_TRACE(D_EVENTS, cache, "Connected");
+
+  sk->class = &rpki_established_sock_class;
+  sk_set_rbsize(sk, RPKI_RX_BUFFER_SIZE);
+
   proto_notify_state(&cache->p->p, PS_UP);
-
-  EVENT_LOCKED_SET(sk, rx_hook, rpki_rx_hook);
-
   rpki_cache_change_state(cache, RPKI_CS_SYNC_START);
+
   sk_schedule_rx(sk);
 
   return 0;

@@ -103,18 +103,25 @@ find_nbma_node_(list *nnl, ip_addr ip)
 }
 
 static void
-ospf_sock_info(LOCKED(event_state) UNUSED, sock *s, char *buf, uint len)
+ospf_sock_info(sock *s, char *buf, uint len)
 {
   struct ospf_iface *ifa = s->data;
   bsnprintf(buf, len, "listening for OSPF %s at %I%J port %d", ifa->oa->po->p.name, s->saddr, s->iface, s->dport);
 }
+
+static const struct sock_class ospf_sk_class = {
+  .rx_hook = ospf_rx_hook,
+  .cli_info = ospf_sock_info,
+  .rx_err = ospf_err_hook,
+  .tx_err = ospf_err_hook,
+};
 
 static int
 ospf_sk_open(struct ospf_iface *ifa)
 {
   struct ospf_proto *p = ifa->oa->po;
 
-  sock *sk = sk_new(p->p.pool);
+  sock *sk = sk_new(ifa->pool);
   sk->type = SK_IP;
   sk->subtype = ospf_is_v2(p) ? SK_IPV4 : SK_IPV6;
   sk->dport = OSPF_PROTO;
@@ -126,20 +133,16 @@ ospf_sk_open(struct ospf_iface *ifa)
   sk->priority = ifa->cf->tx_priority;
   ifa->tx_bufsize = ospf_iface_bufsize(ifa);
 
-  EVENT_LOCKED_INIT(sk,
-      .rx_hook = ospf_rx_hook,
-      .cli_info = ospf_sock_info,
-      .rx_err = ospf_err_hook,
-      .tx_err = ospf_err_hook,
-      .rbsize = ifa->tx_bufsize
-      );
-
   sk->data = (void *) ifa;
   sk->flags = SKF_LADDR_RX | (ifa->check_ttl ? SKF_TTL_RX : 0);
   sk->ttl = ifa->cf->ttl_security ? 255 : 1;
 
+  sk->class = &ospf_sk_class;
+
   if (sk_open(sk, &p->p) < 0)
     goto err;
+
+  sk_set_rbsize(sk, ifa->tx_bufsize);
 
   /* 12 is an offset of the checksum in an OSPFv3 packet */
   if (ospf_is_v3(p) && !ifa->autype)
@@ -204,6 +207,10 @@ ospf_sk_leave_dr(struct ospf_iface *ifa)
   ifa->sk_dr = 0;
 }
 
+static const struct sock_class ospf_vlink_sk_class = {
+  .tx_err = ospf_verr_hook,
+};
+
 void
 ospf_open_vlink_sk(struct ospf_proto *p)
 {
@@ -216,13 +223,11 @@ ospf_open_vlink_sk(struct ospf_proto *p)
   /* FIXME: configurable tos/priority ? */
   sk->tos = IP_PREC_INTERNET_CONTROL;
   sk->priority = sk_priority_control;
-  EVENT_LOCKED_INIT(sk,
-      .tx_err = ospf_verr_hook,
-      .rbsize = 0
-      );
 
   sk->data = (void *) p;
   sk->flags = 0;
+
+  sk->class = &ospf_vlink_sk_class;
 
   if (sk_open(sk, &p->p) < 0)
     goto err;
@@ -306,7 +311,7 @@ ospf_iface_remove(struct ospf_iface *ifa)
   int i;
 
   if (ifa->sk)
-    sk_close(ifa->sk);
+    sk_close(ifa->sk, 0);
 
   if (ifa->type == OSPF_IT_VLINK)
     OSPF_TRACE(D_EVENTS, "Removing vlink to %R via area %R", ifa->vid, ifa->voa->areaid);
@@ -328,7 +333,7 @@ ospf_iface_shutdown(struct ospf_iface *ifa)
     ospf_send_hello(ifa, OHS_SHUTDOWN, NULL);
 
   if (ifa->sk)
-    sk_close(ifa->sk);
+    sk_close(ifa->sk, 0);
 }
 
 /**
@@ -1343,7 +1348,7 @@ ospf_iface_change_mtu(struct ospf_proto *p, struct ospf_iface *ifa)
 
   /* We do not shrink dynamic buffers */
   uint bsize = ospf_iface_bufsize(ifa);
-  EVENT_LOCKED
+  EVENT_LOCKED_NOFAIL
   {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, ifa->sk);
     if (bsize > su->rbsize)

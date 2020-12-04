@@ -169,15 +169,17 @@ void debug(const char *msg, ...);	/* Printf to debug output */
 #define EXPENSIVE_CHECK(x) /* intentionally left blank */
 
 #ifdef DEBUGGING
-#define ASSERT(x) ASSERT_DIE(x)
-#define ASSUME(x) ASSERT_DIE(x)
-#ifdef ENABLE_EXPENSIVE_CHECKS
-#undef EXPENSIVE_CHECK
-#define EXPENSIVE_CHECK(x) ASSERT_DIE(x)
-#endif
+# define ASSERT(x) ASSERT_DIE(x)
+# define ASSUME(x) ASSERT_DIE(x)
+# define BUG_WARN(...) bug(__VA_ARGS__)
+# ifdef ENABLE_EXPENSIVE_CHECKS
+#   undef EXPENSIVE_CHECK
+#   define EXPENSIVE_CHECK(x) ASSERT_DIE(x)
+# endif
 #else
-#define ASSERT(x) do { if (!(x)) log(L_BUG "Assertion '%s' failed at %s:%d", #x, __FILE__, __LINE__); } while(0)
-#define ASSUME(x) /* intentionally left blank */
+# define ASSERT(x) do { if (!(x)) log(L_BUG "Assertion '%s' failed at %s:%d", #x, __FILE__, __LINE__); } while(0)
+# define ASSUME(x) /* intentionally left blank */
+# define BUG_WARN(...) log(L_BUG __VA_ARGS__)
 #endif
 
 

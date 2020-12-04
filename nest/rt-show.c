@@ -386,51 +386,59 @@ void
 rt_show(struct rt_show_data *d)
 {
   struct rt_show_data_rtable *tab;
-  net *n;
 
-  /* Filtered routes are neither exported nor have sensible ordering */
-  if (d->filtered && (d->export_mode || d->primary_only))
-    cf_error("Incompatible show route options");
+  _Bool loop = 0;
 
-  rt_show_prepare_tables(d);
-
-  if (!d->addr)
+/*  Temporarily dropped the yielding. To be fixed soon.  */
+/*  THE_BIRD_LOCKED({ return; })  */
   {
-    WALK_LIST(tab, d->tables)
-      rt_lock_table(tab->table);
+    /* Filtered routes are neither exported nor have sensible ordering */
+    if (d->filtered && (d->export_mode || d->primary_only))
+      cf_error("Incompatible show route options");
 
-    /* There is at least one table */
-    d->tab = HEAD(d->tables);
-    CLI_TRY(this_cli) {
-      while (rt_show_cont(d))
+    rt_show_prepare_tables(d);
+
+    if (!d->addr)
+    {
+      WALK_LIST(tab, d->tables)
+	rt_lock_table(tab->table);
+
+      /* There is at least one table */
+      d->tab = HEAD(d->tables);
+      loop = 1;
+    }
+    else
+    {
+      WALK_LIST(tab, d->tables)
       {
-	the_bird_unlock();
-	the_bird_lock();
+	d->tab = tab;
+	d->kernel = rt_show_get_kernel(d);
+
+	net *n;
+
+	if (d->show_for)
+	  n = net_route(tab->table, d->addr);
+	else
+	  n = net_find(tab->table, d->addr);
+
+	if (n)
+	  rt_show_net(this_cli, n, d);
       }
 
-    } CLI_EXCEPT(this_cli) {
-      rt_show_cleanup(d);
-    }
-  }
-  else
-  {
-    WALK_LIST(tab, d->tables)
-    {
-      d->tab = tab;
-      d->kernel = rt_show_get_kernel(d);
-
-      if (d->show_for)
-	n = net_route(tab->table, d->addr);
+      if (d->rt_counter)
+	cli_msg(0, "");
       else
-	n = net_find(tab->table, d->addr);
-
-      if (n)
-	rt_show_net(this_cli, n, d);
+	cli_msg(8001, "Network not found");
     }
-
-    if (d->rt_counter)
-      cli_msg(0, "");
-    else
-      cli_msg(8001, "Network not found");
   }
+
+  while (loop)
+/*    THE_BIRD_LOCKED(( rt_show_cleanup(d), loop = 0 )) */
+    {
+      CLI_TRY(this_cli) {
+	loop = rt_show_cont(d);
+      } CLI_EXCEPT(this_cli) {
+	rt_show_cleanup(d);
+      }
+    }
 }

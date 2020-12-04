@@ -284,12 +284,11 @@ cli_err(sock *s, int err)
 }
 
 void
-cli_sock_info(LOCKED(event_state), sock *s, char *buf, uint len)
+cli_sock_info(sock *s, char *buf, uint len)
 {
-  AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
-  if (su->rx_hook == cli_connect)
+  if (s->class->rx_hook == cli_connect)
     bsnprintf(buf, len, "listening for incoming CLI connections");
-  else if (su->rx_hook == cli_rx)
+  else if (s->class->rx_hook == cli_rx)
     bsnprintf(buf, len, "for active CLI");
   else
     bsnprintf(buf, len, "for CLI in some strange state");
@@ -309,6 +308,12 @@ cli_new(sock *s)
   return c;
 }
 
+static const struct sock_class cli_sock_class = {
+  .rx_hook = cli_rx,
+  .rx_err = cli_err,
+  .cli_info = cli_sock_info,
+};
+
 uint
 cli_connect(sock *s, byte *buf UNUSED, uint size UNUSED)
 {
@@ -316,18 +321,15 @@ cli_connect(sock *s, byte *buf UNUSED, uint size UNUSED)
 
   if (config->cli_debug)
     log(L_INFO "CLI connect");
-  
-  EVENT_LOCKED {
-    AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
-    su->rx_hook = cli_rx;
-    su->rx_err = cli_err;
-    su->cli_info = cli_sock_info;
-  }
+ 
+  s->class = &cli_sock_class;
 
   s->data = c = cli_new(s);
   s->pool = c->pool;		/* We need to have all the socket buffers allocated in the cli pool */
 
   rmove(s, c->pool);
+  sk_set_rbsize(s, 1024);
+
   cli_hello(c);
 
   sk_schedule_rx(s);

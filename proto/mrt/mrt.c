@@ -707,12 +707,14 @@ mrt_dump_cmd(struct mrt_dump_data *d)
   if (s->table_ptr)
     rt_lock_table(s->table_ptr);
 
+  _Bool loop = 1;
+  while (loop)
+  
   CLI_TRY(this_cli) {
     while (mrt_dump_cont(this_cli, s))
-    {
-      the_bird_unlock();
-      the_bird_lock();
-    }
+/*  Temporarily dropped the yielding. To be fixed soon.  */
+/*      coro_suspend()*/;
+
   } CLI_EXCEPT(this_cli) {
     mrt_dump_cleanup(s);
   }

@@ -585,7 +585,7 @@ rip_iface_stop(struct rip_iface *ifa)
   tm_stop(ifa->timer);
   tm_stop(ifa->rxmt_timer);
 
-  sk_close(ifa->sk);
+  sk_close(ifa->sk, 0);
   ifa->sk = NULL;
 
   ifa->up = 0;

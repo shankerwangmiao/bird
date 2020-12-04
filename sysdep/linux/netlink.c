@@ -1984,10 +1984,16 @@ nl_async_err_hook(sock *sk, int e UNUSED)
 }
 
 static void
-nl_async_sock_info(LOCKED(event_state) UNUSED, sock *sk UNUSED, char *buf, uint len)
+nl_async_sock_info(sock *sk UNUSED, char *buf, uint len)
 {
   bsnprintf(buf, len, "listening to kernel route updates");
 }
+
+static const struct sock_class nl_async_sock_class = {
+  .rx_hook = nl_async_hook,
+  .cli_info = nl_async_sock_info,
+  .rx_err = nl_async_err_hook,
+};
 
 static void
 nl_open_async(void)
@@ -2026,11 +2032,7 @@ nl_open_async(void)
   sk = nl_async_sk = sk_new(krt_pool);
   sk->type = SK_MAGIC;
 
-  EVENT_LOCKED_INIT(sk,
-      .rx_hook = nl_async_hook,
-      .cli_info = nl_async_sock_info,
-      .rx_err = nl_async_err_hook,
-      );
+  sk->class = &nl_async_sock_class;
 
   sk->fd = fd;
   if (sk_open(sk, NULL) < 0)

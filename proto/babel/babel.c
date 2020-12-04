@@ -2278,7 +2278,7 @@ babel_shutdown(struct proto *P)
 
   WALK_LIST(ifa, p->interfaces)
     if (ifa->sk)
-      sk_close(ifa->sk);
+      sk_close(ifa->sk, 0);
 
   return PS_DOWN;
 }

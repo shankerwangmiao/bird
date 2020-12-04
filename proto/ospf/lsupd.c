@@ -701,7 +701,7 @@ ospf_receive_lsupd(struct ospf_packet *pkt, struct ospf_iface *ifa,
   ospf_send_lsack(p, n, ACKL_DIRECT);
 
   /* Send enqueued LSAs immediately, do not wait for flood_event */
-  if (ev_cancel(p->flood_event))
+  if (ev_cancel(p->flood_event, 0))
     ospf_flood_event(p);
 
   /*

@@ -40,87 +40,14 @@
 #include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 /*
- *	Locking subsystem
+ *	Coroutine private structures 
  */
-
-#define DOMAIN(type) struct domain__##type
-#define ASSERT_NO_LOCK	ASSERT_DIE(last_locked == NULL)
-
-struct domain_generic {
-  pthread_mutex_t mutex;
-  struct domain_generic **prev;
-  struct lock_order *locked_by;
-  const char *name;
-  _Bool free_after_unlock;
-};
-
-#define DOMAIN_INIT(_name) { .mutex = PTHREAD_MUTEX_INITIALIZER, .name = _name }
-
-static struct domain_generic event_state_domain_gen = DOMAIN_INIT("Event state"),
-			     the_bird_domain_gen = DOMAIN_INIT("The BIRD");
-
-DOMAIN(event_state) event_state_domain = { .event_state = &event_state_domain_gen };
-DOMAIN(the_bird) the_bird_domain = { .the_bird = &the_bird_domain_gen };
-
-struct domain_generic *
-domain_new(const char *name)
-{
-  struct domain_generic *dg = xmalloc(sizeof(struct domain_generic));
-  *dg = (struct domain_generic) DOMAIN_INIT(name);
-  return dg;
-}
-
-void
-domain_free_after_unlock(struct domain_generic *dg)
-{
-  dg->free_after_unlock = 1;
-}
-
-#define EVENT_UNLOCKED for ( \
-  _Bool _bird_aux = (do_unlock(event_state_domain.event_state, &locking_stack.event_state), 1); \
-  _bird_aux ? ((_bird_aux = 0), 1) : 0; \
-  do_lock(event_state_domain.event_state, &locking_stack.event_state))
-
-_Thread_local struct lock_order locking_stack = {};
-_Thread_local struct domain_generic **last_locked = NULL;
-
-void do_lock(struct domain_generic *dg, struct domain_generic **lsp)
-{
-  if (lsp <= last_locked)
-    bug("Trying to lock in a bad order");
-  if (*lsp)
-    bug("Inconsistent locking stack state on lock");
-  pthread_mutex_lock(&dg->mutex);
-  if (dg->prev || dg->locked_by)
-    bug("Previous unlock not finished correctly");
-  dg->prev = last_locked;
-  *lsp = dg;
-  last_locked = lsp;
-  dg->locked_by = &locking_stack;
-}
-
-void do_unlock(struct domain_generic *dg, struct domain_generic **lsp)
-{
-  if (dg->locked_by != &locking_stack)
-    bug("Inconsistent domain state on unlock");
-  if ((last_locked != lsp) || (*lsp != dg))
-    bug("Inconsistent locking stack state on unlock");
-  dg->locked_by = NULL;
-  last_locked = dg->prev;
-  *lsp = NULL;
-  dg->prev = NULL;
-  pthread_mutex_unlock(&dg->mutex);
-  if (dg->free_after_unlock)
-  {
-    pthread_mutex_destroy(&dg->mutex);
-    xfree(dg);
-  }
-}
 
 static _Thread_local event *ev_local = NULL;
 static _Thread_local struct birdsock *sk_local = NULL;
@@ -134,10 +61,12 @@ struct coroutine {
 
   pthread_t id;				/* The appropriate pthread */
   pthread_attr_t attr;			/* Attributes (stack size, detachable, etc.) */
+  struct domain_generic * _Atomic wfl;	/* Waiting for this lock */
+  _Atomic _Bool cancelled;		/* Synchronous cancel has been requested */
 
   enum coro_flags {
     CORO_REPEAT = 0x2,			/* Run once more */
-    CORO_STOP = 0x4,			/* Canceled by self */
+    CORO_STOP = 0x4,			/* Cancelled, finishing */
     CORO_KIND_EVENT = 0x10,		/* Event coroutine */
     CORO_KIND_SOCKET = 0x20,		/* Socket coroutine */
     CORO_KIND_MASK = 0xf0,
@@ -162,7 +91,114 @@ static _Thread_local union coro_union {
   struct coroutine coro;
   struct coro_event event;
   struct coro_sock sock;
-} *coro_local = NULL;
+} *coro_local = NULL, main_thread_coro;
+
+/*
+ *	Locking subsystem
+ */
+
+#define DOMAIN(type) struct domain__##type
+#define ASSERT_NO_LOCK	ASSERT_DIE(last_locked == NULL)
+
+struct domain_generic {
+  pthread_mutex_t mutex;
+  struct domain_generic **prev;
+  struct lock_order *locked_by;
+  const char *name;
+  _Bool free_after_unlock;
+  _Bool unlock_to_cancel;
+};
+
+#define DOMAIN_INIT(_name) { .mutex = PTHREAD_MUTEX_INITIALIZER, .name = _name }
+
+static struct domain_generic event_state_domain_gen = DOMAIN_INIT("Event state"),
+			     the_bird_domain_gen = DOMAIN_INIT("The BIRD");
+
+DOMAIN(event_state) event_state_domain = { .event_state = &event_state_domain_gen };
+DOMAIN(the_bird) the_bird_domain = { .the_bird = &the_bird_domain_gen };
+
+struct domain_generic *
+domain_new(const char *name)
+{
+  struct domain_generic *dg = xmalloc(sizeof(struct domain_generic));
+  *dg = (struct domain_generic) DOMAIN_INIT(name);
+  return dg;
+}
+
+void
+domain_free_after_unlock(struct domain_generic *dg)
+{
+  dg->free_after_unlock = 1;
+}
+
+_Thread_local struct lock_order locking_stack = {};
+_Thread_local struct domain_generic **last_locked = NULL;
+
+#define WFL(d) atomic_store_explicit(&coro_local->coro.wfl, (d), memory_order_release);
+
+_Bool do_lock(struct domain_generic *dg, struct domain_generic **lsp)
+{
+  if (lsp <= last_locked)
+    bug("Trying to lock in a bad order");
+  if (*lsp)
+    bug("Inconsistent locking stack state on lock");
+
+  /* Declare that we're waiting for this lock */
+  WFL(dg);
+
+  /* We shall fail if cancellation is requested */
+  if (atomic_load_explicit(&coro_local->coro.cancelled, memory_order_acquire))
+  {
+    WFL(NULL);
+    return 0;
+  }
+
+  /* Is this unlocking speculative? */
+  while (
+      pthread_mutex_lock(&dg->mutex),
+      dg->unlock_to_cancel) {
+    if (atomic_load_explicit(&coro_local->coro.cancelled, memory_order_acquire))
+    {
+      /* Yes and this thread is being cancelled */
+      WFL(NULL);
+      pthread_mutex_unlock(&dg->mutex);
+      return 0;
+    }
+    else
+      /* Yes and this thread will wait for a regular unlock */
+      pthread_mutex_unlock(&dg->mutex);
+  }
+
+  /* Finally a regular unlock, not waiting for the lock anymore */
+  WFL(NULL);
+    
+  if (dg->prev || dg->locked_by)
+    bug("Previous unlock not finished correctly");
+  dg->prev = last_locked;
+  *lsp = dg;
+  last_locked = lsp;
+  dg->locked_by = &locking_stack;
+
+  return 1;
+}
+
+void do_unlock(struct domain_generic *dg, struct domain_generic **lsp)
+{
+  if (dg->locked_by != &locking_stack)
+    bug("Inconsistent domain state on unlock");
+  if ((last_locked != lsp) || (*lsp != dg))
+    bug("Inconsistent locking stack state on unlock");
+  dg->locked_by = NULL;
+  last_locked = dg->prev;
+  *lsp = NULL;
+  dg->prev = NULL;
+  pthread_mutex_unlock(&dg->mutex);
+  if (dg->free_after_unlock)
+  {
+    pthread_mutex_destroy(&dg->mutex);
+    xfree(dg);
+  }
+}
 
 static const char *coro_dump(struct coroutine *c)
 {
@@ -199,8 +235,7 @@ static _Thread_local char sk_debug_buf[256];
 extern char *sk_type_names[];
 
 #define SK_INFO(sk) ({ \
-    ASSERT_DIE(UNLOCKED_STRUCT(event_state, sk)->cli_info); \
-    UNLOCKED_STRUCT(event_state, sk)->cli_info(CURRENT_LOCK, sk, sk_debug_buf, sizeof(sk_debug_buf)-1); \
+    sk->class->cli_info(sk, sk_debug_buf, sizeof(sk_debug_buf)-1); \
     sk_debug_buf; \
     })
 #define SK_DEBUG_FMT "(sk %s %p from coro %p %s)\n"
@@ -208,154 +243,99 @@ extern char *sk_type_names[];
 
 #define SK_DEBUG(sk, s, a...) DBG("%.6T: socket " s " " SK_DEBUG_FMT, ##a, SK_DEBUG_ARGS(sk))
 
-#define SK_DEBUG_FMT_UNLOCKED "(sk %s %p from coro %p)\n"
-#define SK_DEBUG_ARGS_UNLOCKED(sk) sk_type_names[sk->type], sk, coro_local
-
-#define SK_DEBUG_UNLOCKED(sk, s, a...) DBG("%.6T: socket " s " " SK_DEBUG_FMT_UNLOCKED, ##a, \
-    SK_DEBUG_ARGS_UNLOCKED(sk))
-
 void
 ev_dump(event *e)
 {
-  EVENT_LOCKED
+  EVENT_LOCKED_NOFAIL
   {
     AUTO_TYPE eu = UNLOCKED_STRUCT(event_state, e);
     debug(EV_DEBUG_FMT, EV_DEBUG_ARGS(e, eu));
   }
 }
 
-static void coro_free(void)
+static void coro_free(LOCKED(event_state), struct coroutine *c)
 {
-  EVENT_LOCKED rem_node(&UNLOCKED_STRUCT(event_state, &coro_local->coro)->n);
+  rem_node(&UNLOCKED_STRUCT(event_state, c)->n);
 
-  switch (coro_local->coro.flags & CORO_KIND_MASK) 
+  switch (c->flags & CORO_KIND_MASK) 
   {
     case CORO_KIND_EVENT:
-      sem_destroy(&coro_local->event.cancel_sem);
+      sem_destroy(&((struct coro_event *) c)->cancel_sem);
       break;
     case CORO_KIND_SOCKET:
-      close(coro_local->sock.cancel_pipe[0]);
-      close(coro_local->sock.cancel_pipe[1]);
+      close(((struct coro_sock *) c)->cancel_pipe[0]);
+      close(((struct coro_sock *) c)->cancel_pipe[1]);
       break;
+    default:
+      bug("Coroutine of unknown kind: 0x%x", c->flags);
+  }
+
+  pthread_attr_destroy(&c->attr);
+  xfree(c);
+}
+
+static void
+coro_sync_stop(LOCKED(event_state), struct coroutine *coro)
+{
+  atomic_store_explicit(&coro->cancelled, 1, memory_order_release);
+
+  switch (coro->flags & CORO_KIND_MASK) 
+  {
+    case CORO_KIND_EVENT:
+      sem_post(&((struct coro_event *) coro)->cancel_sem);
+      break;
+
+    case CORO_KIND_SOCKET:
+      write(((struct coro_sock *) coro)->cancel_pipe[1], "", 1);
+      break;
+      
     default:
       bug("Coroutine of unknown kind: 0x%x", coro_local->coro.flags);
   }
 
-  pthread_attr_destroy(&coro_local->coro.attr);
-  xfree(coro_local);
-  coro_local = NULL;
-}
+  /* The cancelled coroutine may be waiting for the lock we're currently waiting for */
+  while (1) {
+    struct domain_generic *wfl = atomic_load_explicit(&coro->wfl, memory_order_acquire);
+    if (!wfl || wfl->locked_by != &locking_stack)
+      break;
 
-#if 0
-/* From sysdep/unix/io.c */
-void io_update_time(void);
-void io_log_event(void *hook, void *data);
-void io_close_event(void);
-#endif
+    /* Speculatively unlock to release the cancelled coroutine and let it finish */
+    wfl->unlock_to_cancel = 1;
+    pthread_mutex_unlock(&wfl->mutex);
+    pthread_mutex_lock(&wfl->mutex);
+    wfl->unlock_to_cancel = 0;
+  }
 
-static _Bool ev_get_cancelled_(LOCKED(event_state))
-{
-  ASSERT_DIE((coro_local->coro.flags & CORO_KIND_MASK) == CORO_KIND_EVENT);
-
-  struct coro_event *cev = &(coro_local->event);
-  if (cev->c.flags & CORO_STOP)
-    return 1;
-
-  int e = sem_trywait(&cev->cancel_sem);
-  if ((e < 0) && (errno == EAGAIN))
-    return 0;
-
-  if ((e < 0) && (errno == EINTR))
-    return ev_get_cancelled_(CURRENT_LOCK);
-
+  /* Now the cancelled coroutine shall be released and we just wait for it */
+  void *data;
+  int e = pthread_join(coro->id, &data);
   if (e < 0)
-    die("sem_trywait() failed in ev_get_cancelled: %M");
+    bug("pthread_join: %m");
 
-  ASSERT_DIE(e == 0);
-  /* Store the cancellation info locally */
-  cev->c.flags |= CORO_STOP;
-  return 1;
+  ASSERT_DIE(data == coro);
+
+  coro_free(CURRENT_LOCK, coro);
 }
 
-_Bool ev_get_cancelled(void)
+static void coro_finish(LOCKED(event_state))
 {
-  _Bool out;
-  EVENT_LOCKED out = ev_get_cancelled_(CURRENT_LOCK);
-  return out;
+  ASSERT_DIE(pthread_equal(coro_local->coro.id, pthread_self()));
+
+  pthread_detach(coro_local->coro.id);
+  coro_free(CURRENT_LOCK, &coro_local->coro);
 }
 
-static NORET void ev_exit_(LOCKED(event_state))
+enum ev_cancel_result
+ev_cancel(event *e, _Bool allow_self)
 {
-  ASSERT_DIE((coro_local->coro.flags & CORO_KIND_MASK) == CORO_KIND_EVENT);
-
-  /* Here the ev_local pointer is not a valid pointer, maybe */
-  DBG("stopping cancelled event: %p\n", coro_local->event.ev);
-
-  if (!(coro_local->coro.flags & CORO_STOP))
-    UNLOCKED_STRUCT(event_state, ev_local)->coro = NULL;
-
-  ev_local = NULL;
-
-  EVENT_UNLOCKED
-  {
-    ASSERT_NO_LOCK;
-    coro_free();
-    pthread_exit(NULL);
-  }
-
-  bug("There shall happen nothing after pthread_exit()");
-}
-
-NORET void ev_exit(void)
-{
-  EVENT_LOCKED ev_exit_(CURRENT_LOCK);
-  bug("There shall happen nothing after pthread_exit()");
-}
-
-static void ev_check_cancelled(LOCKED(event_state))
-{
-  if (ev_get_cancelled_(CURRENT_LOCK))
-    ev_exit_(CURRENT_LOCK);
-}
-
-void ev_suspend(void)
-{
-  struct suspend_lock {
-    struct domain_generic *lock, **slot;
-  } stored[LOCK_ORDER_DEPTH];
-
-  uint N = 0;
-  while (last_locked)
-  {
-    stored[N++] = (struct suspend_lock) {
-      .lock = *last_locked,
-      .slot = last_locked,
-    };
-
-    do_unlock(*last_locked, last_locked);
-  }
-
-  while (N--)
-  {
-    do_lock(stored[N].lock, stored[N].slot);
-    _Bool cancelled;
-    cancelled = ev_get_cancelled();
-    if (!cancelled)
-      continue;
-
-    while (last_locked)
-      do_unlock(*last_locked, last_locked);
-    ev_exit();
-  }
-}
-
-_Bool ev_cancel(event *e)
-{
-  _Bool out = 0;
-  EVENT_LOCKED
+  _Bool out = EV_CANCEL_NONE;
+  EVENT_LOCKED_NOFAIL
   {
     if (e == ev_local)
+    {
+      ASSERT_DIE(allow_self);
       EV_DEBUG(e, "cancel from self");
+    }
     else if (ev_local)
       EV_DEBUG(e, "cancel from %p", ev_local);
     else if (sk_local)
@@ -369,84 +349,85 @@ _Bool ev_cancel(event *e)
       eu->coro->c.flags &= ~CORO_REPEAT;
 
       if (e == ev_local)
+      {
 	eu->coro->c.flags |= CORO_STOP;
+	out = EV_CANCEL_SELF;
+      }
       else
-	sem_post(&(eu->coro->cancel_sem));
+      {
+	coro_sync_stop(CURRENT_LOCK, &eu->coro->c);
+	out = EV_CANCEL_STOPPED;
+      }
       
-      out = 1;
       eu->coro = NULL;
     }
   }
   return out;
 }
 
-static void *ev_entry(void *data)
+static void *ev_entry(void *_coro)
 {
   timeloop_current = &main_timeloop; /* TODO: use local timers if appropriate */
 
-  EVENT_LOCKED
+  void (*hook)(void *);
+  void *data;
+
+  DBG("ev_entry(%p)\n", _coro);
+  coro_local = _coro;
+
+  EVENT_LOCKED ({ return coro_local; })
   {
-    DBG("ev_entry(%p)\n", data);
-    coro_local = data;
-
-    ev_check_cancelled(CURRENT_LOCK);
-
     ev_local = coro_local->event.ev;
     AUTO_TYPE evlu = UNLOCKED_STRUCT(event_state, ev_local);
 
-    do {
-      coro_local->coro.flags &= ~CORO_REPEAT;
+    coro_local->coro.flags &= ~CORO_REPEAT;
 
-      void (*hook)(void *) = evlu->hook;
-      void *data = evlu->data;
+    hook = evlu->hook;
+    data = evlu->data;
 
-      /*
-      io_log_event(hook, data);
-      */
-
-      EV_DEBUG(ev_local, "event entry");
-
-      if (ev_local->default_lock)
-	EVENT_UNLOCKED
-	{
-	  ASSERT_NO_LOCK;
-	  the_bird_lock();
-	  EV_DEBUG_UNLOCKED(ev_local, "event locked");
-
-	  _Bool cancelled;
-	  cancelled = ev_get_cancelled();
-	  if (cancelled)
-	  {
-	    the_bird_unlock();
-	    ev_exit();
-	  }
-
-	  hook(data);
-
-	  EV_DEBUG_UNLOCKED(ev_local, "event unlocked");
-	  the_bird_unlock();
-	  ASSERT_NO_LOCK;
-	}
-      else
-	EVENT_UNLOCKED
-	{
-	  ASSERT_NO_LOCK;
-	  hook(data);
-	  ASSERT_NO_LOCK;
-	}
-
-      DBG("event %p exit\n", ev_local);
-      /*      io_update_time(); */
-    } while (coro_local->coro.flags & CORO_REPEAT);
-
-    ev_check_cancelled(CURRENT_LOCK);
-
-    DBG("coro_free(%p)\n", data);
-    evlu->coro = NULL;
+    EV_DEBUG(ev_local, "event entry");
   }
 
-  coro_free();
-  return NULL;
+  ASSERT_NO_LOCK;
+
+  if (ev_local->default_lock)
+  {
+    if (!the_bird_lock())
+      return coro_local;
+
+    EV_DEBUG_UNLOCKED(ev_local, "event locked");
+    hook(data);
+    EV_DEBUG_UNLOCKED(ev_local, "event unlocked");
+
+    the_bird_unlock();
+  }
+  else
+    hook(data);
+
+  ASSERT_NO_LOCK;
+
+  DBG("event %p exit\n", ev_local);
+
+  _Bool repeat;
+
+  EVENT_LOCKED ({ return coro_local; })
+  {
+    repeat = !!(coro_local->coro.flags & CORO_REPEAT);
+    if (repeat)
+      DBG("coro_repeat(%p)\n", _coro);
+    else
+    {
+      AUTO_TYPE evlu = UNLOCKED_STRUCT(event_state, ev_local);
+      DBG("coro_finish(%p)\n", _coro);
+      evlu->coro = NULL;
+      coro_finish(CURRENT_LOCK);
+    }
+  }
+
+  if (repeat)
+    return ev_entry(_coro);
+  else
+    return NULL;
 }
 
 void coro_start(LOCKED(event_state), struct coroutine *coro, void *(*entry)(void *))
@@ -459,9 +440,6 @@ void coro_start(LOCKED(event_state), struct coroutine *coro, void *(*entry)(void
 
   if (e = pthread_attr_setstacksize(&coro->attr, CORO_STACK_SIZE))
     die("pthread_attr_setstacksize(%u) failed: %M", CORO_STACK_SIZE, e);
-
-  if (e = pthread_attr_setdetachstate(&coro->attr, PTHREAD_CREATE_DETACHED))
-    die("pthread_attr_setdetachstate(PTHREAD_CREATE_DETACHED) failed: %M", e);
 
   if (e = pthread_create(&coro->id, &coro->attr, entry, coro))
     die("pthread_create() failed: %M", e);
@@ -511,7 +489,7 @@ void ev_schedule_locked(LOCKED(event_state), event *ev)
 #ifdef DEBUGGING
 void ev_schedule_(event *ev, const char *name, const char *file, uint line)
 {
-  EVENT_LOCKED ev_schedule_locked_(CURRENT_LOCK, ev, name, file, line);
+  EVENT_LOCKED_NOFAIL ev_schedule_locked_(CURRENT_LOCK, ev, name, file, line);
 }
 
 #define ev_schedule_locked(l, e) ev_schedule_locked_(l, e, #e, __FILE__, __LINE__)
@@ -519,30 +497,23 @@ void ev_schedule_(event *ev, const char *name, const char *file, uint line)
 #else
 void ev_schedule(event *ev)
 {
-  EVENT_LOCKED ev_schedule_locked(CURRENT_LOCK, ev);
+  EVENT_LOCKED_NOFAIL ev_schedule_locked(CURRENT_LOCK, ev);
 }
 #endif
 
-static const char SKC_CANCEL = 0;
-static const char SKC_RELOAD = 1;
-
-#define sk_write_pipe(s, su, dir, c) ({ \
-    int e = write(su->dir##_coro->cancel_pipe[1], c, 1); \
-    if (e < 1) SK_DEBUG(s, "write cancel pipe %s returned %d (%m)", #dir, e); \
-    })
-
 #define sk_do_cancel(s, su, dir) ({ \
+      SK_DEBUG(s, "cancel " #dir); \
       ASSERT_DIE(!(su->dir##_coro->c.flags & CORO_REPEAT)); \
-      if (su->dir##_coro == &coro_local->sock) \
+      if (su->dir##_coro == &coro_local->sock) { \
+	self = 1; \
 	su->dir##_coro->c.flags |= CORO_STOP; \
-      else \
-	sk_write_pipe(s, su, dir, &SKC_CANCEL); \
+      } else \
+	coro_sync_stop(CURRENT_LOCK, &su->dir##_coro->c); \
+	su->dir##_coro = NULL; \
       })
    
-#define sk_do_reload(s, su, dir) sk_write_pipe(s, su, dir, &SKC_RELOAD)
-
 static void
-sk_close_debug(LOCKED(event_state), struct birdsock *s)
+sk_close_debug(struct birdsock *s)
 {
   if (s == sk_local)
     SK_DEBUG(s, "close from self");
@@ -556,57 +527,51 @@ sk_close_debug(LOCKED(event_state), struct birdsock *s)
 
 void sk_close_fd(sock *s);
 
-void sk_close(struct birdsock *s)
+_Bool
+sk_close(struct birdsock *s, _Bool allow_self)
 {
+  sk_close_debug(s);
   sk_close_fd(s);
 
-  _Bool free_now = 1;
-  EVENT_LOCKED
-  {
-    sk_close_debug(CURRENT_LOCK, s);
+  _Bool self = 0;
 
+  EVENT_LOCKED_NOFAIL
+  {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
-    su->closing = 1;
 
     if (su->rx_coro)
-    {
-      SK_DEBUG(s, "cancel rx");
-      free_now = 0;
       sk_do_cancel(s, su, rx);
-    }
 
     if (su->tx_coro)
-    {
-      SK_DEBUG(s, "cancel tx");
-      free_now = 0;
       sk_do_cancel(s, su, tx);
-    }
   }
 
-  if (free_now)
-  {
-    SK_DEBUG_UNLOCKED(s, "sk_close() free now");
-    rfree(s);
-  }
+  ASSERT_DIE(allow_self || !self);
+
+  rfree(s);
+
+  return self;
 }
 
 void sk_set_rbsize(sock *s, uint rbsize)
 {
-  EVENT_LOCKED
+  EVENT_LOCKED_NOFAIL
   {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
     if (rbsize > su->rbsize)
     {
       su->rbsize = rbsize;
-      sk_do_reload(s, su, rx);
+
+      if (su->rx_coro)
+	write(su->rx_coro->cancel_pipe[1], "", 1);
     }
   }
 }
 
 
-int sk_read(sock *s, struct sock_rx_buf *buf, int revents);
-int sk_write(sock *s);
+void sk_read(sock *s, struct sock_rx_buf *buf, int revents);
+_Bool sk_write(sock *s);
 void sk_err(sock *s, int revents, _Bool rx);
 
 #define SKL_RX (su->rx_coro == &(coro_local->sock))
@@ -619,7 +584,6 @@ _Bool sk_write_from_tx_hook(LOCKED(event_state), sock *s)
 
 static void *sk_entry(void *data)
 {
-  _Bool cancelled = 0;
   DBG("sk_entry(%p)\n", data);
   coro_local = data;
 
@@ -631,7 +595,7 @@ static void *sk_entry(void *data)
 
 #define SK_DBG_DIR	(rx ? "rx" : (tx ? "tx" : "??"))
 
-  EVENT_LOCKED {
+  EVENT_LOCKED ({ return data; }) {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, sk_local);
     rx = SKL_RX;
     tx = SKL_TX;
@@ -649,21 +613,33 @@ static void *sk_entry(void *data)
 
   uint sk_err_revents = 0;
 
-  while (!cancelled && !(coro_local->coro.flags & CORO_STOP))
+  while (1)
   {
-    /*
-    uint (*rx_hook)(struct birdsock *, byte *buf, uint size);
-    _Bool (*tx_hook)(struct birdsock *);
-    */
-
-    EVENT_LOCKED {
+    EVENT_LOCKED ({
+	if (buf)
+	  xfree(buf);
+	return data;
+	})
+    {
       AUTO_TYPE su = UNLOCKED_STRUCT(event_state, sk_local);
       rx = SKL_RX;
       tx = SKL_TX;
-      /*
-      rx_hook = su->rx_hook;
-      tx_hook = su->tx_hook;
-      */
+
+      if (buf)
+      {
+	SK_DEBUG(sk_local, "reload");
+	if (su->rbsize > buf->end)
+	{
+	  SK_DEBUG(sk_local, "rx buf realloc from %u to %u", buf->end, su->rbsize);
+	  struct sock_rx_buf *nb = xmalloc(sizeof(struct sock_rx_buf) + su->rbsize);
+	  *nb = (struct sock_rx_buf) { .end = su->rbsize, .pos = buf->pos };
+	  if (nb->pos)
+	    memcpy(nb->buf, buf->buf, nb->pos);
+
+	  xfree(buf);
+	  buf = nb;
+	}
+      }
     }
 
     if (!tx && !rx)
@@ -683,7 +659,7 @@ static void *sk_entry(void *data)
     };
 
     int pout = poll(pfd, 2, -1);
-    SK_DEBUG_UNLOCKED(sk_local, "poll %s returned %d", SK_DBG_DIR, pout);
+    SK_DEBUG(sk_local, "poll %s returned %d", SK_DBG_DIR, pout);
 
     if (pout < 0)
     {
@@ -692,106 +668,57 @@ static void *sk_entry(void *data)
       die("poll: %m");
     }
 
+    /* A ping received, do a reload */
     if (pfd[0].revents & POLLIN)
     {
-      DBG("got a byte on cancel pipe for %s socket: %p\n", SK_DBG_DIR, coro_local->sock.socket);
-      _Bool reload = 0;
-      for (char c; read(coro_local->sock.cancel_pipe[0], &c, 1) == 1; )
-	if (c == SKC_CANCEL)
-	{
-	  cancelled = 1;
-	  break;
-	}
-	else if (c == SKC_RELOAD)
-	  reload = 1;
-	else
-	  die("cancel pipe (%s) got byte %d", SK_DBG_DIR, c);
-
-      if (cancelled)
-      {
-	SK_DEBUG_UNLOCKED(sk_local, "cancelled");
-	break;
-      }
-
-      if (!reload)
-	continue;
-
-      if (buf)
-      {
-	SK_DEBUG_UNLOCKED(sk_local, "reload");
-	uint rbsize = EVENT_LOCKED_GET(sk_local, rbsize);
-	if (rbsize <= buf->end)
-	  continue;
-
-	SK_DEBUG_UNLOCKED(sk_local, "rx buf realloc from %u to %u", buf->end, rbsize);
-	struct sock_rx_buf *nb = xmalloc(sizeof(struct sock_rx_buf) + rbsize);
-	*nb = (struct sock_rx_buf) { .end = rbsize, .pos = buf->pos };
-	if (nb->pos)
-	  memcpy(nb->buf, buf->buf, nb->pos);
-
-	xfree(buf);
-	buf = nb;
-	continue;
-      }
+      SK_DEBUG(sk_local, "got something on cancel pipe");
+      char cbuf[64];
+      read(coro_local->sock.cancel_pipe[0], cbuf, sizeof(cbuf));
+      continue;
     }
 
+    /* An error received, finishing */
     if (pfd[1].revents & (POLLHUP | POLLERR))
     {
+      SK_DEBUG(sk_local, "got error revents: %x", pfd[1].revents);
       sk_err_revents = pfd[1].revents;
       break;
     }
 
     if (tx && (pfd[1].revents & POLLOUT))
     {
-      SK_DEBUG_UNLOCKED(sk_local, "write");
-//      io_log_event(tx_hook, sk_local->data);
-      cancelled = !sk_write(sk_local);
-//      io_close_event();
+      SK_DEBUG(sk_local, "write");
+      if (!sk_write(sk_local))
+	break;
     }
 
     else if (rx && (pfd[1].revents & POLLIN))
     {
-      SK_DEBUG_UNLOCKED(sk_local, "read");
-//      io_log_event(rx_hook, sk_local->data);
+      SK_DEBUG(sk_local, "read");
       sk_read(sk_local, buf, pfd[1].revents);
-//      io_close_event();
     }
+
+    /* End of the socket loop */
   }
 
-  _Bool free_sock = 0;
-  EVENT_LOCKED
+  if (buf)
+    xfree(buf);
+
+  EVENT_LOCKED ({ return coro_local; })
   {
-    SK_DEBUG(sk_local, "%s done", SK_DBG_DIR);
-
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, sk_local);
-    if (su->rx_coro == &(coro_local->sock))
-      su->rx_coro = NULL;
 
-    if (su->tx_coro == &(coro_local->sock))
+    if (SKL_RX)
+      su->rx_coro = NULL;
+    else if (SKL_TX)
       su->tx_coro = NULL;
 
-    if (sk_local->owner)
-    {
-      uint as;
-      if (as = --UNLOCKED_STRUCT(event_state, sk_local->owner)->active_sockets)
-	DBG("Still %u active sockets remaining in %s\n", as, sk_local->owner->name);
-      else
-      {
-	DBG("Last active socket, scheduling owner event for %s\n", sk_local->owner->name);
-	ev_schedule_locked(CURRENT_LOCK, sk_local->owner->event);
-      }
-    }
-
-    if (su->closing && !su->tx_coro && !su->rx_coro)
-      free_sock = 1;
+    coro_finish(CURRENT_LOCK);
   }
 
-  if (free_sock)
-    rfree(sk_local);
-  else if (sk_err_revents)
+  if (sk_err_revents)
     sk_err(sk_local, sk_err_revents, rx);
 
-  coro_free();
   return NULL;
 }
 
@@ -806,17 +733,12 @@ sk_coro_start(LOCKED(event_state), struct birdsock *s, struct coro_sock **coro_p
   if (pipe2(coro->cancel_pipe, O_NONBLOCK) < 0)
     die("pipe: %m");
   coro_start(CURRENT_LOCK, &(coro->c), sk_entry);
-  if (s->owner)
-  {
-    uint as = ++UNLOCKED_STRUCT(event_state, s->owner)->active_sockets;
-    DBG("Updated active sockets of %s to %u\n", s->owner->name, as);
-  } 
 }
 
 void
 sk_schedule_rx(struct birdsock *s)
 {
-  EVENT_LOCKED {
+  EVENT_LOCKED_NOFAIL {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
     if (!su->rx_coro)
       sk_coro_start(CURRENT_LOCK, s, &su->rx_coro);
@@ -833,7 +755,7 @@ sk_schedule_tx_locked(LOCKED(event_state), struct birdsock *s)
 void
 sk_schedule_tx(struct birdsock *s)
 {
-  EVENT_LOCKED
+  EVENT_LOCKED_NOFAIL
   {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
     if (!su->tx_coro)
@@ -844,6 +766,8 @@ sk_schedule_tx(struct birdsock *s)
 void
 coro_init(void)
 {
+  main_thread_coro.coro.id = pthread_self();
+  coro_local = &main_thread_coro;
   init_list(&coro_list);
 }
 
@@ -859,7 +783,7 @@ do_show_threads(uint cnt)
   show_thread("Main thread");
 
   union coro_union *c;
-  EVENT_LOCKED WALK_LIST(c, coro_list)
+  EVENT_LOCKED_NOFAIL WALK_LIST(c, coro_list)
   {
     if (seen >= cnt)
     {
@@ -883,24 +807,9 @@ do_show_threads(uint cnt)
 	_Bool rx = (su->rx_coro == &c->sock);
 	_Bool tx = (su->tx_coro == &c->sock);
 	char buf[256];
-	if (su->cli_info)
-	  su->cli_info(CURRENT_LOCK, s, buf, sizeof(buf)-1);
 
-	if (rx)
-	  if (su->cli_info)
-	    show_thread("RX %s socket %s", sk_type_names[s->type], buf);
-	  else
-	    show_thread("RX %s socket rx %p data %p", sk_type_names[s->type], su->rx_hook, s->data);  
-	else if (tx)
-	  if (su->cli_info)
-	    show_thread("TX %s socket %s", sk_type_names[s->type], buf);
-	  else
-	    show_thread("TX %s socket tx %p data %p", sk_type_names[s->type], su->tx_hook, s->data);
-	else
-	  if (su->cli_info)
-	    show_thread("?? %s socket %s", sk_type_names[s->type], buf);
-	  else
-	    show_thread("?? %s socket data %p", sk_type_names[s->type], s->data);
+	show_thread("%s %s socket %s",
+	    (rx ? "RX" : (tx ? "TX" : "??")), sk_type_names[s->type], buf);
 	break;
       }
       default: bug("Unknown type of coroutine");

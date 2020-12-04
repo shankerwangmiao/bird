@@ -374,7 +374,12 @@ cmd_reconfig_status(void)
 static sock *cli_sk;
 static char *path_control_socket = PATH_CONTROL_SOCKET;
 
-void cli_sock_info(LOCKED(event_state), sock *s, char *buf, uint len);
+void cli_sock_info(sock *s, char *buf, uint len);
+
+static const struct sock_class cli_listen_sock_class = {
+  .rx_hook = cli_connect,
+  .cli_info = cli_sock_info,
+};
 
 static void
 cli_init_unix(uid_t use_uid, gid_t use_gid)
@@ -384,11 +389,9 @@ cli_init_unix(uid_t use_uid, gid_t use_gid)
   cli_init();
   s = cli_sk = sk_new(cli_pool);
   s->type = SK_UNIX_PASSIVE;
-  EVENT_LOCKED_INIT(s, 
-      .rx_hook = cli_connect,
-      .cli_info = cli_sock_info,
-      .rbsize = 1024,
-      );
+  s->class = &cli_listen_sock_class;
+
+  EVENT_LOCKED_INIT_LOCK(s);
 
   /* Return value intentionally ignored */
   unlink(path_control_socket);
@@ -748,7 +751,9 @@ parse_args(int argc, char **argv)
 int
 main(int argc, char **argv)
 {
-  the_bird_lock();
+  coro_init();
+
+  ASSERT_DIE(the_bird_lock());
 
 #ifdef HAVE_LIBDMALLOC
   if (!getenv("DMALLOC_OPTIONS"))
@@ -831,9 +836,7 @@ main(int argc, char **argv)
 
   while (1)
   {
-    timers_wait(&main_timeloop);
-
-    THE_BIRD_LOCKED
+    LOCKED_DO_NOFAIL(the_bird, the_bird_domain)
     {
       if (atomic_exchange_explicit(&async_config_flag, 0, memory_order_acquire))
 	async_config();
@@ -846,6 +849,8 @@ main(int argc, char **argv)
 
       timers_fire(&main_timeloop);
     }
+
+    timers_wait(&main_timeloop);
   }
 
   bug("I/O loop died");

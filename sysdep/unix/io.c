@@ -139,18 +139,16 @@ times_init(struct timeloop *loop)
   if ((ts.tv_sec < 0) || (((u64) ts.tv_sec) > ((u64) 1 << 40)))
     log(L_WARN "Monotonic clock is crazy");
 
-  loop->last_time = ts.tv_sec S + ts.tv_nsec NS;
-  loop->real_time = 0;
+  atomic_store_explicit(&loop->last_time__atomic, ts.tv_sec S + ts.tv_nsec NS, memory_order_relaxed);
+  atomic_store_explicit(&loop->real_time__atomic, 0, memory_order_relaxed);
 
   if (pipe2(loop->fds, O_NONBLOCK) < 0)
     die("Couldn't open timer pipe");
 }
 
-void
-times_update(LOCKED(timer), struct timeloop *loop)
+btime
+times_update(btime current)
 {
-  ASSERT_LOCK(timer, loop->domain);
-
   struct timespec ts;
   int rv;
 
@@ -160,18 +158,19 @@ times_update(LOCKED(timer), struct timeloop *loop)
 
   btime new_time = ts.tv_sec S + ts.tv_nsec NS;
 
-  if (new_time < loop->last_time)
+  if (new_time < current)
     log(L_ERR "Monotonic clock is broken");
 
+  return new_time;
+  /*
   loop->last_time = new_time;
   loop->real_time = 0;
+  */
 }
 
-void
-times_update_real_time(LOCKED(timer), struct timeloop *loop)
+btime
+times_fetch_real_time(void)
 {
-  ASSERT_LOCK(timer, loop->domain);
-
   struct timespec ts;
   int rv;
 
@@ -179,7 +178,7 @@ times_update_real_time(LOCKED(timer), struct timeloop *loop)
   if (rv < 0)
     die("clock_gettime: %m");
 
-  loop->real_time = ts.tv_sec S + ts.tv_nsec NS;
+  return ts.tv_sec S + ts.tv_nsec NS;
 }
 
 
@@ -763,7 +762,7 @@ sk_free(resource *r)
     sk_ssh_free(s);
 #endif
 
-  EVENT_LOCKED {
+  EVENT_LOCKED_NOFAIL {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
     ASSERT_DIE(su->tx_coro == NULL);
     ASSERT_DIE(su->rx_coro == NULL);
@@ -941,36 +940,24 @@ sk_setup(sock *s)
 
 #define THE_BIRD_LOCKED_CALL(s, what) ({ \
     if (CALL_NOLOCK(s)) what; \
-    else THE_BIRD_LOCKED what; \
+    else THE_BIRD_LOCKED({CANCEL_ACTION;}) what; \
     })
 
 #define CALL_ERR_TBL(s, hook, e) ({ \
-    AUTO_TYPE _hook = EVENT_LOCKED_GET(s, hook); \
-    if (_hook) _hook(s, e); })
+    if ((s)->class->hook##_err) (s)->class->hook##_err((s), e); })
     
 #define CALL_ERR(s, hook, e, tbl) ({ \
     if (tbl || CALL_NOLOCK(s)) CALL_ERR_TBL(s, hook, e); \
-    else THE_BIRD_LOCKED CALL_ERR_TBL(s, hook, e); })
+    else THE_BIRD_LOCKED({CANCEL_ACTION;}) CALL_ERR_TBL(s, hook, e); })
 
-#define CALL_RX_ERR(s, arg, tbl) CALL_ERR(s, rx_err, arg, tbl)
-#define CALL_TX_ERR(s, arg, tbl) CALL_ERR(s, tx_err, arg, tbl)
+#define CALL_RX_ERR(s, arg, tbl) CALL_ERR(s, rx, arg, tbl)
+#define CALL_TX_ERR(s, arg, tbl) CALL_ERR(s, tx, arg, tbl)
 
-#define CALL_RX_HOOK(s, buf_) ({ \
-    AUTO_TYPE _hook = EVENT_LOCKED_GET(s, rx_hook); \
-    ASSERT_DIE(_hook); \
-    EVENT_LOCKED_GET(s, closing) ? 0 : _hook(s, buf_->buf, buf_->pos); \
-    })
+#define CALL_RX_HOOK(s, buf_) ((s)->class->rx_hook((s), buf_->buf, buf_->pos))
 
-#define CALL_TX_HOOK(s) ({ \
-    AUTO_TYPE _hook = EVENT_LOCKED_GET(s, tx_hook); \
-    ASSERT_DIE(_hook); \
-    EVENT_LOCKED_GET(s, closing) ? 0 : _hook(s); \
-    })
+#define CALL_TX_HOOK(s) ((s)->class->tx_hook((s)))
 
-#define CALL_TX_HOOK_IF_EXISTS(s) ({ \
-    AUTO_TYPE _hook = EVENT_LOCKED_GET(s, tx_hook); \
-    (_hook && !EVENT_LOCKED_GET(s, closing)) ? _hook(s) : 0; \
-    })
+#define CALL_TX_HOOK_IF_EXISTS(s) (((s)->class->tx_hook) ? CALL_TX_HOOK((s)) : 0 )
 
 static void
 sk_tcp_connected(sock *s)
@@ -984,6 +971,8 @@ sk_tcp_connected(sock *s)
 
   s->type = SK_TCP;
 }
+
+#define CANCEL_ACTION return 0
 
 static int
 sk_passive_connected(sock *s, int type)
@@ -1008,18 +997,10 @@ sk_passive_connected(sock *s, int type)
   t->ttl = s->ttl;
   t->tos = s->tos;
   t->vrf = s->vrf;
-  EVENT_LOCKED
-  {
-    AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
-    EVENT_LOCKED_INIT(t, 
-	.rbsize = su->rbsize,
-	.cli_info = su->cli_info,
-	);
-
-    AUTO_TYPE tu = UNLOCKED_STRUCT(event_state, t);
-    init_list(&tu->tx_chain);
-  }
+  EVENT_LOCKED_INIT_LOCK(t);
+  init_list(&t->LOCKED_STRUCT_NAME(event_state).tx_chain);
+  init_list(&t->LOCKED_STRUCT_NAME(event_state).used_tx_bufs);
 
   if (type == SK_TCP)
   {
@@ -1043,9 +1024,11 @@ sk_passive_connected(sock *s, int type)
     return 1;
   }
 
-  EVENT_LOCKED_GET(s, rx_hook)(t, NULL, 0);
+  s->class->rx_hook(t, NULL, 0);
   return 1;
 }
+
+#undef CANCEL_ACTION
 
 #ifdef HAVE_LIBSSH
 /*
@@ -1376,21 +1359,14 @@ sk_open(sock *s, struct proto *p)
     if (sk_set_md5_auth(s, s->saddr, s->daddr, -1, s->iface, s->password, 0) < 0)
       goto err;
 
-  _Bool schedule_tx = 0;
   switch (s->type)
   {
   case SK_TCP_ACTIVE:
     sockaddr_fill(&sa, s->af, s->daddr, s->iface, s->dport);
-    if (connect(fd, &sa.sa, SA_LEN(sa)) >= 0)
-    {
-      sk_tcp_connected(s);
-      CALL_TX_HOOK(s);
-    }
-    else if (errno != EINTR && errno != EAGAIN && errno != EINPROGRESS &&
-	     errno != ECONNREFUSED && errno != EHOSTUNREACH && errno != ENETUNREACH)
+    if (connect(fd, &sa.sa, SA_LEN(sa)) < 0 && 
+	errno != EINTR && errno != EAGAIN && errno != EINPROGRESS &&
+	errno != ECONNREFUSED && errno != EHOSTUNREACH && errno != ENETUNREACH)
       ERR2("connect");
-    else
-      schedule_tx = 1;
     break;
 
   case SK_TCP_PASSIVE:
@@ -1405,12 +1381,11 @@ sk_open(sock *s, struct proto *p)
 
   s->owner = p;
 
-  EVENT_LOCKED {
-    AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
-    init_list(&su->tx_chain);
-  }
+  EVENT_LOCKED_INIT_LOCK(s);
+  init_list(&s->LOCKED_STRUCT_NAME(event_state).tx_chain);
+  init_list(&s->LOCKED_STRUCT_NAME(event_state).used_tx_bufs);
 
-  if (schedule_tx)
+  if (s->type == SK_TCP_ACTIVE)
     sk_schedule_tx(s);
 
   return 0;
@@ -1597,39 +1572,7 @@ sk_buf_store(sock *s, const struct sk_buf *buf)
   return nb;
 }
 
-static void
-sk_buf_free(struct sk_buf *buf, _Bool the_bird_locked)
-{
-  if (the_bird_locked)
-    mb_free(buf);
-  else
-  {
-    the_bird_lock();
-    mb_free(buf);
-    the_bird_unlock();
-  }
-}
-
-static void
-sk_flush_tx_chain(sock *s, _Bool the_bird_locked)
-{
-  while (1) {
-    struct sk_buf *buf = NULL;
-    EVENT_LOCKED {
-      AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
-      if (!EMPTY_LIST(su->tx_chain))
-      {
-	buf = HEAD(su->tx_chain);
-	rem_node(&UNLOCKED_STRUCT(event_state, buf)->n);
-      }
-    }
-    
-    if (!buf)
-      return;
-   
-    sk_buf_free(buf, the_bird_locked); 
-  }
-}
+#define CANCEL_ACTION return -1
 
 static int
 sk_maybe_write(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
@@ -1651,7 +1594,6 @@ sk_maybe_write(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
 	{
 	  /* EPIPE is just a connection close notification during TX */
 	  int er = errno == EPIPE ? 0 : errno;
-	  sk_flush_tx_chain(s, 1);
 	  CALL_TX_ERR(s, er, the_bird_locked);
 	  return -1;
 	}
@@ -1672,7 +1614,6 @@ sk_maybe_write(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
 
       if (e < 0)
       {
-	sk_flush_tx_chain(s, 1);
 	s->err = ssh_get_error(s->ssh->session);
 	CALL_TX_ERR(s, ssh_get_error_code(s->ssh->session), the_bird_locked);
 	return -1;
@@ -1696,7 +1637,6 @@ sk_maybe_write(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
       {
 	/* EPIPE is just a connection close notification during TX */
 	int er = errno == EPIPE ? 0 : errno;
-	sk_flush_tx_chain(s, 1);
 	CALL_TX_ERR(s, er, the_bird_locked);
 	return -1;
       }
@@ -1707,58 +1647,70 @@ sk_maybe_write(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
   }
 }
 
+#undef CANCEL_ACTION
+
 void sk_schedule_tx_locked(LOCKED(event_state), sock *s);
 _Bool sk_write_from_tx_hook(LOCKED(event_state), sock *s);
 
 static int
-sk_write_or_store(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
+sk_write_or_store(sock *s, struct sk_buf *buf)
 {
   /* We have a buffer to write and we don't know the state of the TX queue.
    * It is either running or empty. If it is empty, we want to try to write
    * directly; otherwise we just put the data in the queue */
 
+  /* It is also assumed that the writer is either non-cancellable
+   * or has the socket owner locked, therefore we don't need to check
+   * for cancellation here. */
+
   _Bool store = 0;
   struct sk_buf *nb = NULL;
-  _Bool closing = 0;
 
-  EVENT_LOCKED
+  list flush_bufs;
+  init_list(&flush_bufs);
+
+  EVENT_LOCKED_NOFAIL
   {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
-    /* Too late to write */
-    if (su->closing)
-      closing = 1;
     /* There may be two different active writers.
      * 1) a TX coroutine which checks the chain for next buffers before ending
      * 2) a direct writer which writes and ends with no such check
      * We must distinguish between these two later, anyway for now we want
      * to store the buffer and then maybe schedule TX.
      */
-    else if (su->tx_coro && !sk_write_from_tx_hook(CURRENT_LOCK, s) || su->tx_active)
+    if (su->tx_coro && !sk_write_from_tx_hook(CURRENT_LOCK, s) || su->tx_active)
       store = 1;
     else
       /* The socket is completely free, locking it */
       su->tx_active = 1;
+
+    if (!EMPTY_LIST(su->used_tx_bufs))
+    {
+      add_tail_list(&flush_bufs, &su->used_tx_bufs);
+      init_list(&su->used_tx_bufs);
+    }
   }
 
-  if (closing)
-    return -1;
-
+  node *fn;
+  WALK_LIST_FIRST(fn, flush_bufs)
+  {
+    rem_node(fn);
+    mb_free(fn);
+  }
+    
   if (store)
   {
     /* We have to copy the buffer as it may (and should) be allocated locally */
     nb = sk_buf_store(s, buf);
 
     /* And now let's check what has changed */
-    EVENT_LOCKED
+    EVENT_LOCKED_NOFAIL
     {
       AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
-      /* Too late to write */
-      if (su->closing)
-	closing = 1;
       /* The socket is still occupied by somebody else, queuing */
-      else if (su->tx_coro && !sk_write_from_tx_hook(CURRENT_LOCK, s) || su->tx_active)
+      if (su->tx_coro && !sk_write_from_tx_hook(CURRENT_LOCK, s) || su->tx_active)
 	add_tail(&su->tx_chain, &UNLOCKED_STRUCT(event_state, nb)->n);
       else
       {
@@ -1768,19 +1720,13 @@ sk_write_or_store(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
       }
     }
 
-    if (closing)
-    {
-      mb_free(nb);
-      return -1;
-    }
-
     if (store)
       /* We have dropped our buf into the queue, others will take care of it. */
       return 0;
   }
 
   /* Now we want to write the buffer. */
-  int e = sk_maybe_write(s, buf, the_bird_locked);
+  int e = sk_maybe_write(s, buf, 1);
 
   /* If we have written whole the packet, we are now done */
   if (e == 1)
@@ -1801,7 +1747,7 @@ sk_write_or_store(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
   else
     nb = sk_buf_store(s, buf);
 
-  EVENT_LOCKED {
+  EVENT_LOCKED_NOFAIL {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
     /* This is the first packet to continue writing with */
@@ -1819,7 +1765,7 @@ sk_write_or_store(sock *s, struct sk_buf *buf, _Bool the_bird_locked)
   return 0;
 
 done:
-  EVENT_LOCKED {
+  EVENT_LOCKED_NOFAIL {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
     /* We are leaving the socket free */
@@ -1875,7 +1821,7 @@ sk_send(sock *s, void *buf, uint len)
     .port = s->dport, /* unused on stream sockets */
   };
 
-  return sk_write_or_store(s, &sb, 1);
+  return sk_write_or_store(s, &sb);
 }
 
 /**
@@ -1901,10 +1847,11 @@ sk_send_to(sock *s, void *buf, uint len, ip_addr addr, unsigned port)
     .port = port ? port : s->dport,
   };
 
-  return sk_write_or_store(s, &sb, 1); 
+  return sk_write_or_store(s, &sb); 
 }
 
 #ifdef HAVE_LIBSSH
+#define CANCEL_ACTION return 0
 static int
 sk_read_ssh(sock *s, struct sock_rx_buf *buf)
 {
@@ -1949,9 +1896,10 @@ sk_read_ssh(sock *s, struct sock_rx_buf *buf)
 
   return 0; /* No data is available on the socket */
 }
+#undef CANCEL_ACTION
 #endif
 
- /* sk_read() and sk_write() are called from BFD's event loop */
+#define CANCEL_ACTION return
 
 void
 sk_read(sock *s, struct sock_rx_buf *buf, int revents)
@@ -2040,7 +1988,10 @@ sk_read(sock *s, struct sock_rx_buf *buf, int revents)
   }
 }
 
-int
+#undef CANCEL_ACTION
+#define CANCEL_ACTION return 0
+
+_Bool
 sk_write(sock *s)
 {
   _Bool ret = 0;
@@ -2087,7 +2038,7 @@ sk_write(sock *s)
     {
       while (1) {
 	struct sk_buf *buf = NULL;
-	EVENT_LOCKED {
+	EVENT_LOCKED ({ return 0; }) {
 	  AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 	  ASSERT_DIE(su->tx_active == 0);
 
@@ -2111,13 +2062,19 @@ sk_write(sock *s)
 	  ASSERT_DIE(buf->begin == buf->len);
 
 	ASSERT_DIE(e == 1);
-	EVENT_LOCKED rem_node(&UNLOCKED_STRUCT(event_state, buf)->n);
-	sk_buf_free(buf, 0);
+	EVENT_LOCKED ({ return 0; })
+	{
+	  rem_node(&UNLOCKED_STRUCT(event_state, buf)->n);
+	  add_tail(
+	      &UNLOCKED_STRUCT(event_state, s)->used_tx_bufs,
+	      &UNLOCKED_STRUCT(event_state, buf)->n
+	      );
+	}
       }
 
       THE_BIRD_LOCKED_CALL(s, ret = CALL_TX_HOOK_IF_EXISTS(s));
       if (!ret)
-	EVENT_LOCKED
+	EVENT_LOCKED ({ return 0; })
 	  if (!EMPTY_LIST(UNLOCKED_STRUCT(event_state, s)->tx_chain))
 	    ret = 1;
 
@@ -2126,11 +2083,15 @@ sk_write(sock *s)
   }
 }
 
+#undef CANCEL_ACTION
+
 int sk_is_ipv4(sock *s)
 { return s->af == AF_INET; }
 
 int sk_is_ipv6(sock *s)
 { return s->af == AF_INET6; }
+
+#define CANCEL_ACTION return
 
 void
 sk_err(sock *s, int revents, _Bool rx)
@@ -2148,6 +2109,8 @@ sk_err(sock *s, int revents, _Bool rx)
   else
     CALL_TX_ERR(s, se, 0);
 }
+
+#undef CANCEL_ACTION
 
 void
 sk_dump_all(void)
@@ -2321,7 +2284,6 @@ void
 io_init(void)
 {
   krt_io_init();
-  coro_init();
   // XXX init_times();
   // XXX update_times();
   boot_time = current_time();
@@ -2334,9 +2296,8 @@ void
 timers_wait(struct timeloop *loop)
 {
   int poll_tout;
-  LOCKED_DO(timer, loop->domain)
+  LOCKED_DO_NOFAIL(timer, loop->domain)
   {
-    times_update(CURRENT_LOCK, loop);
     timer *t = timers_first(CURRENT_LOCK, loop);
     poll_tout = t ? TM_REMAINS_U(t) TO_MS : -1;
   }

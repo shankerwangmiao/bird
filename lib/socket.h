@@ -49,6 +49,7 @@ typedef struct birdsock {
   resource r;
   pool *pool;				/* Pool where incoming connections should be allocated (for SK_xxx_PASSIVE) */
   struct proto *owner;			/* Protocol which this socket belongs to; NULL for BIRD-wide sockets */
+  const struct sock_class *class;	/* Socket hook set */
   int type;				/* Socket type */
   int subtype;				/* Socket subtype */
   void *data;				/* User data */
@@ -64,20 +65,10 @@ typedef struct birdsock {
 
   /* To be locked by the real owner instead */
   LOCKED_STRUCT(event_state, 
-      /* rx_hook: On stream sockets (TCP, UNIX) returns number of processed bytes. Otherwise ignored. */
-      uint (*rx_hook)(struct birdsock *, byte *buf, uint size);
-      void (*rx_err)(struct birdsock *, int); /* errno or zero if EOF */
-
-      _Bool (*tx_hook)(struct birdsock *);    /* returns 1 to call again */
-      void (*tx_err)(struct birdsock *, int); /* errno or zero if EOF */
-
-      void (*cli_info)(LOCKED(event_state), struct birdsock *, char *buf, uint len);	/* Write CLI info to the buf */
-
-      list tx_chain;
+      list tx_chain, used_tx_bufs;
       struct coro_sock *rx_coro, *tx_coro;
-      uint rbsize;			/* May be changed ONLY with RX stopped or from RX hook inside */
+      uint rbsize;			/* Use sk_set_rbsize() to set when RX is running */
       _Bool tx_active;			/* Set when somebody is trying to TX directly */
-      _Bool closing;			/* Set when the socket is closing */
       );
 
   /* Information about received datagrams (UDP, RAW), valid in rx_hook */
@@ -95,6 +86,17 @@ typedef struct birdsock {
   struct ssh_sock *ssh;			/* Used in SK_SSH */
 } sock;
 
+struct sock_class {
+  /* rx_hook: On stream sockets (TCP, UNIX) returns number of processed bytes. Otherwise ignored. */
+  uint (*rx_hook)(struct birdsock *, byte *buf, uint size);
+  void (*rx_err)(struct birdsock *, int); /* errno or zero if EOF */
+
+  _Bool (*tx_hook)(struct birdsock *);    /* returns 1 to call again */
+  void (*tx_err)(struct birdsock *, int); /* errno or zero if EOF */
+
+  void (*cli_info)(struct birdsock *, char *buf, uint len);	/* Write CLI info to the buf */
+};
+
 sock *sock_new(pool *);			/* Allocate new socket */
 #define sk_new(X) sock_new(X)		/* Wrapper to avoid name collision with OpenSSL */
 
@@ -110,21 +112,16 @@ void sk_cancel_rx(sock *);
 void sk_schedule_tx(sock *);
 void sk_cancel_tx(sock *);
 
-/* Close and free the socket (asynchronous) */
-void sk_close(sock *);
+/* Close and free the socket (synchronously).
+ * Do not call from a cancellable routine.
+ * Returns 1 if cancelling self. */
+_Bool sk_close(sock *, _Bool allow_self);
 
-/* Resize read buffer */
+/* Resize read buffer. Do not call from a cancellable routine. */
 void sk_set_rbsize(sock *, uint);
 
 int sk_is_ipv4(sock *s);		/* True if socket is IPv4 */
 int sk_is_ipv6(sock *s);		/* True if socket is IPv6 */
-
-#if 0
-static inline _Bool sk_tx_buffer_empty(sock *sk)
-{
-  return !EVENT_LOCKED_GET(sk, tx_active);
-}
-#endif
 
 int sk_setup_multicast(sock *s);	/* Prepare UDP or IP socket for multicasting */
 int sk_join_group(sock *s, ip_addr maddr);	/* Join multicast group on sk iface */

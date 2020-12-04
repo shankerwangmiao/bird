@@ -34,13 +34,10 @@ event *ev_new(pool *);
 
 /* Initialize an event; run only if event is inactive. */
 #define ev_setup(e, _hook, _data) ({ \
-    EVENT_LOCKED_INIT_LOCK((e)); \
-    EVENT_LOCKED { \
-      AUTO_TYPE eu = UNLOCKED_STRUCT(event_state, e); \
-      ASSERT_DIE(eu->coro == NULL); \
-      eu->hook = _hook; \
-      eu->data = _data; \
-    } \
+    EVENT_LOCKED_INIT((e), \
+	.hook = _hook, \
+	.data = _data, \
+	); \
     (e)->name = #_hook; \
     (e)->file = __FILE__; \
     (e)->line = __LINE__; \
@@ -63,7 +60,7 @@ event *ev_new(pool *);
     ev_setup_unlocked(e, hook, data); \
     e; })
 
-/* Schedule the event */
+/* Schedule the event. */
 #ifdef DEBUGGING
 void ev_schedule_(event *, const char *, const char *, uint);
 #define ev_schedule(e) ev_schedule_(e, #e, __FILE__, __LINE__)
@@ -71,16 +68,30 @@ void ev_schedule_(event *, const char *, const char *, uint);
 void ev_schedule(event *);
 #endif
 
-/* Cancel an event. Returns 1 if there was an active event running. */
-_Bool ev_cancel(event *);
-
-/* Suspend and wait for current locks.
- * This is an explicit cancellation point. */
-void ev_suspend(void);
-
-/* Cancellation point check */
-_Bool ev_get_cancelled(void);
-NORET void ev_exit(void);
+/* Cancel an event. Set @allow_self=1 to allow self cancellation.
+ * Blocks until the event has stopped.
+ *
+ * You may not cancel every event around there. To be on the safe side,
+ * you should:
+ *
+ * (1) have the event owner locked AND
+ * (2) explicitly allow cancellation in the event implementation AND
+ * (3) never allocate or free other events from any cancellable event.
+ *
+ * The cancellation is implemented as domain lock failure.
+ * When implementing the cancellable event, you MUST use
+ * LOCKED_DO ( cleanup ) when acquiring a domain lock from an unlocked context.
+ * These domains are called cancellation-critical.
+ * The cancellation requestor MUST ensure that the target event has no of
+ * the cancellation-critical domains locked.
+ *
+ * For more info on the event model, see the documentation.
+ * */
+enum ev_cancel_result {
+  EV_CANCEL_NONE = 0,	  /* The event was not scheduled/running */
+  EV_CANCEL_STOPPED = 1,  /* The event has stopped */
+  EV_CANCEL_SELF = 2,	  /* Cancelling self, be careful */
+} ev_cancel(event *, _Bool allow_self);
 
 /* Dump event info on debug console */
 void ev_dump(event *r);

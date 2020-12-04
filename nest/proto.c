@@ -56,8 +56,7 @@ static inline int proto_is_done(struct proto *p)
 {
   return (p->active == 1)
     && (p->proto_state == PS_DOWN)
-    && (p->active_channels == 0)
-    && (EVENT_LOCKED_GET(p, active_sockets) == 0);
+    && (p->active_channels == 0);
 }
 
 static inline int channel_is_active(struct channel *c)
@@ -249,73 +248,90 @@ static void
 channel_feed_loop(void *ptr)
 {
   struct channel *c = ptr;
-
-  if (c->export_state != ES_FEEDING)
-    return;
+  _Bool loop = 1;
+  _Bool wait = 1;
 
   /* The protocol has not yet started fully, wait for the proto_event to complete */
-  while (c->proto->do_start)
-    ev_suspend();
+  while (loop && wait)
+    THE_BIRD_LOCKED({ return; })
+    {
+      loop = c->export_state == ES_FEEDING;
+      wait = c->proto->do_start;
+    }
 
-  ASSERT(!c->feed_active);
-  if (c->proto->feed_begin)
-    c->proto->feed_begin(c, !c->refeeding);
+  if (!loop)
+    return;
 
-  // DBG("Feeding protocol %s continued\n", p->name);
-  rt_feed_channel(c);
+  THE_BIRD_LOCKED({ return; })
+  {
+    ASSERT(!c->feed_active);
+    if (c->proto->feed_begin)
+      c->proto->feed_begin(c, !c->refeeding);
+
+    rt_feed_channel_prepare(c);
+  }
+
+  while (loop)
+    THE_BIRD_LOCKED({ return; })
+      loop = rt_feed_channel(c);
 
   /* Reset export limit if the feed ended with acceptable number of exported routes */
   struct channel_limit *l = &c->out_limit;
-  if (c->refeeding &&
-      (l->state == PLS_BLOCKED) &&
-      (c->refeed_count <= l->limit) &&
-      (c->stats.exp_routes <= l->limit))
+  THE_BIRD_LOCKED({ return; })
+    if (loop = c->refeeding &&
+	(l->state == PLS_BLOCKED) &&
+	(c->refeed_count <= l->limit) &&
+	(c->stats.exp_routes <= l->limit))
+    {
+      log(L_INFO "Protocol %s resets route export limit (%u)", c->proto->name, l->limit);
+      channel_reset_limit(&c->out_limit);
+
+      /* Continue in feed - it will process routing table again from beginning */
+      c->refeed_count = 0;
+      rt_feed_channel_prepare(c);
+    }
+
+  while (loop)
+    THE_BIRD_LOCKED({ return; })
+      loop = rt_feed_channel(c);
+
+  THE_BIRD_LOCKED({ return; })
   {
-    log(L_INFO "Protocol %s resets route export limit (%u)", c->proto->name, l->limit);
-    channel_reset_limit(&c->out_limit);
+    // DBG("Feeding protocol %s finished\n", p->name);
+    c->export_state = ES_READY;
+    if (c->table->total_updates > c->last_export)
+      channel_run_exports(c);
 
-    /* Continue in feed - it will process routing table again from beginning */
-    c->refeed_count = 0;
-    c->refeed_lastmod_max = 0;
-    rt_feed_channel(c);
+    // proto_log_state_change(p);
+
+    if (c->proto->feed_end)
+      c->proto->feed_end(c);
   }
-
-  // DBG("Feeding protocol %s finished\n", p->name);
-  c->export_state = ES_READY;
-  if (c->table->total_updates > c->last_export)
-    channel_run_exports(c);
-
-  // proto_log_state_change(p);
-
-  if (c->proto->feed_end)
-    c->proto->feed_end(c);
 }
 
 static void
 channel_feed_net(void *data)
 {
   struct channel *c = data;
+  _Bool loop = 1;
 
-  while (1)
-  {
-    int max = 16;
-    struct channel_net_feed *n;
-    node *nxt;
-    WALK_LIST_DELSAFE(n, nxt, c->net_feed)
+  while (loop)
+    LOCKED_DO ( the_bird, the_bird_domain, { return; })
     {
-      max -= rt_feed_channel_net(c, n->addr);
-      rem_node(&n->n);
-      mb_free(n);
-      if (max <= 0)
-	break;
+      int max = 16;
+      struct channel_net_feed *n;
+      node *nxt;
+      WALK_LIST_DELSAFE(n, nxt, c->net_feed)
+      {
+	max -= rt_feed_channel_net(c, n->addr);
+	rem_node(&n->n);
+	mb_free(n);
+	if (max <= 0)
+	  break;
+      }
+
+      loop = !EMPTY_LIST(c->net_feed);
     }
-
-    if (EMPTY_LIST(c->net_feed))
-      return;
-
-    /* Let others do their job also */
-    ev_suspend();
-  }
 }
 
 static void
@@ -327,7 +343,7 @@ channel_schedule_feed_net(struct channel *c, net_addr *n)
   add_tail(&c->net_feed, &nf->n);
 
   if (!c->net_feed_event)
-    c->net_feed_event = ev_new_init(c->proto->pool, channel_feed_net, c);
+    c->net_feed_event = ev_new_init_unlocked(c->proto->pool, channel_feed_net, c);
 
   ev_schedule(c->net_feed_event);
 }
@@ -350,7 +366,7 @@ channel_stop_export(struct channel *c)
 
   /* Abort also all scheduled net feeds */
   if (c->net_feed_event)
-    ev_cancel(c->net_feed_event);
+    ev_cancel(c->net_feed_event, 0);
 
   struct channel_net_feed *n;
   node *nxt;
@@ -364,7 +380,11 @@ channel_stop_export(struct channel *c)
 
   /* Abort all regular exports */
   if (c->export_event)
+  {
+    ev_cancel(c->export_event, 0);
     rfree(c->export_event);
+  }
+
   c->export_event = NULL;
 
   c->stats.exp_routes = 0;
@@ -400,7 +420,7 @@ static void
 channel_reset_import(struct channel *c)
 {
   /* Need to abort feeding */
-  ev_cancel(c->reload_event);
+  ev_cancel(c->reload_event, 0);
   rt_reload_channel_abort(c);
 
   rt_prune_sync(c->in_table, 1);
@@ -447,7 +467,7 @@ channel_do_start(struct channel *c)
   add_tail(&c->table->channels, &c->table_node);
   c->proto->active_channels++;
 
-  c->feed_event = ev_new_init(c->proto->pool, channel_feed_loop, c);
+  c->feed_event = ev_new_init_unlocked(c->proto->pool, channel_feed_loop, c);
 
   bmap_init(&c->export_map, c->proto->pool, 1024);
   bmap_init(&c->export_reject_map, c->proto->pool, 1024);
@@ -889,8 +909,6 @@ proto_new(struct proto_config *cf)
 
   init_list(&p->channels);
 
-  EVENT_LOCKED_INIT_LOCK(p);
-
   return p;
 }
 
@@ -1259,6 +1277,7 @@ proto_rethink_goal(struct proto *p)
     config_del_obstacle(p->cf->global);
     proto_remove_channels(p);
     rem_node(&p->n);
+    ev_cancel(p->event, 1);
     rfree(p->event);
     mb_free(p->message);
     mb_free(p);

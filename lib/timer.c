@@ -42,19 +42,27 @@ _Thread_local struct timeloop *timeloop_current;
 btime
 current_time(void)
 {
-  return timeloop_current->last_time;
+  return atomic_load_explicit(&timeloop_current->last_time__atomic, memory_order_relaxed);
 }
 
 btime
 current_real_time(void)
 {
   struct timeloop *loop = timeloop_current;
+  btime real_time = atomic_load_explicit(&loop->real_time__atomic, memory_order_relaxed);
 
-  if (!loop->real_time)
-    LOCKED_DO(timer, loop->domain)
-      times_update_real_time(CURRENT_LOCK, loop);
+  if (real_time)
+    return real_time;
 
-  return loop->real_time;
+  atomic_compare_exchange_strong_explicit(
+      &loop->real_time__atomic,
+      &real_time,
+      times_fetch_real_time(),
+      memory_order_relaxed,
+      memory_order_relaxed
+      );
+
+  return current_real_time();
 }
 
 
@@ -91,7 +99,7 @@ tm_dump(resource *r)
 {
   timer *t = (void *) r;
 
-  LOCKED_DO(timer, timeloop_current->domain)
+  LOCKED_DO_NOFAIL(timer, timeloop_current->domain)
     tm_dump_locked(CURRENT_LOCK, t);
 }
 
@@ -151,21 +159,21 @@ tm_set_unlocked(LOCKED(timer), timer *t, btime when)
 void
 tm_set(timer *t, btime when)
 {
-  LOCKED_DO(timer, timeloop_current->domain)
+  LOCKED_DO_NOFAIL(timer, timeloop_current->domain)
     tm_set_unlocked(CURRENT_LOCK, t, when);
 }
 
 void
 tm_start(timer *t, btime after)
 {
-  LOCKED_DO(timer, timeloop_current->domain)
+  LOCKED_DO_NOFAIL(timer, timeloop_current->domain)
     tm_set_unlocked(CURRENT_LOCK, t, current_time() + MAX(after, 0));
 }
 
 void
 tm_set_max(timer *t, btime when)
 {
-  LOCKED_DO(timer, timeloop_current->domain)
+  LOCKED_DO_NOFAIL(timer, timeloop_current->domain)
     if (when > UNLOCKED_STRUCT(timer, t)->expires)
       tm_set_unlocked(CURRENT_LOCK, t, when);
 }
@@ -176,7 +184,7 @@ tm_start_max(timer *t, btime after)
   btime now_ = current_time();
   btime when = after + now_;
 
-  LOCKED_DO(timer, timeloop_current->domain)
+  LOCKED_DO_NOFAIL(timer, timeloop_current->domain)
     if (when > UNLOCKED_STRUCT(timer, t)->expires)
       tm_set_unlocked(CURRENT_LOCK, t, when);
 }
@@ -209,7 +217,7 @@ tm_stop_unlocked(LOCKED(timer), timer *t)
 void
 tm_stop(timer *t)
 {
-  LOCKED_DO(timer, timeloop_current->domain)
+  LOCKED_DO_NOFAIL(timer, timeloop_current->domain)
     tm_stop_unlocked(CURRENT_LOCK, t);
 }
 
@@ -217,7 +225,7 @@ _Bool
 tm_active(timer *t)
 {
   _Bool out;
-  LOCKED_DO(timer, timeloop_current->domain) out = TM_EXPIRES_U(t) != 0;
+  LOCKED_DO_NOFAIL(timer, timeloop_current->domain) out = TM_EXPIRES_U(t) != 0;
   return out;
 }
 
@@ -225,7 +233,7 @@ btime
 tm_remains(timer *t)
 {
   btime rem;
-  LOCKED_DO(timer, timeloop_current->domain) rem = TM_REMAINS_U(t);
+  LOCKED_DO_NOFAIL(timer, timeloop_current->domain) rem = TM_REMAINS_U(t);
   return rem;
 }
 
@@ -237,7 +245,7 @@ timers_init(struct timeloop *loop, pool *p, const char *name)
   loop->domain = DOMAIN_NEW(timer, name);
   LOCKED_STRUCT_INIT_LOCK(timer, loop, loop->domain);
 
-  LOCKED_DO(timer, loop->domain)
+  LOCKED_DO_NOFAIL(timer, loop->domain)
   {
     AUTO_TYPE lu = UNLOCKED_STRUCT(timer, loop);
 
@@ -255,12 +263,19 @@ timers_fire(struct timeloop *loop)
   {
     timer *t = NULL;
 
-    LOCKED_DO(timer, loop->domain)
+    LOCKED_DO_NOFAIL(timer, loop->domain)
     {
-      btime base_time;
+      atomic_store_explicit(&loop->real_time__atomic, 0, memory_order_relaxed);
 
-      times_update(CURRENT_LOCK, loop);
-      base_time = loop->last_time;
+      btime old_time = atomic_load_explicit(&loop->last_time__atomic, memory_order_relaxed);
+      btime base_time = times_update(old_time);
+
+      ASSERT_DIE(atomic_compare_exchange_strong_explicit(
+	    &loop->last_time__atomic,
+	    &old_time,
+	    base_time,
+	    memory_order_relaxed,
+	    memory_order_relaxed));
 
       if ((t = timers_first(CURRENT_LOCK, loop)) && TM_EXPIRES_U(t) <= base_time)
       {
@@ -270,8 +285,8 @@ timers_fire(struct timeloop *loop)
 	{
 	  btime when = tu->expires + t->recurrent;
 
-	  if (when <= loop->last_time)
-	    when = loop->last_time + t->recurrent;
+	  if (when <= base_time)
+	    when = base_time + t->recurrent;
 
 	  if (t->randomize)
 	    when += random() % (t->randomize + 1);

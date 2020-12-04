@@ -132,15 +132,38 @@ static list bgp_sockets;		/* Global list of listening sockets */
 
 static void bgp_connect(struct bgp_proto *p);
 static void bgp_active(struct bgp_proto *p);
-static void bgp_setup_conn(struct bgp_proto *p, struct bgp_conn *conn);
-static void bgp_setup_sk(LOCKED(event_state), struct bgp_conn *conn, sock *s);
+static void bgp_setup_conn(struct bgp_proto *p, struct bgp_conn *conn, struct birdsock *sk);
 static void bgp_send_open(struct bgp_conn *conn);
 static void bgp_update_bfd(struct bgp_proto *p, int use_bfd);
-static void bgp_listen_sock_info(LOCKED(event_state), struct birdsock *s, char *buf, uint len);
-static void bgp_sock_info(LOCKED(event_state), struct birdsock *s, char *buf, uint len);
+static void bgp_listen_sock_info(struct birdsock *s, char *buf, uint len);
+static void bgp_sock_info(struct birdsock *s, char *buf, uint len);
 
 static uint bgp_incoming_connection(sock *sk, byte *buf UNUSED, uint dummy UNUSED);
+static _Bool bgp_connected(sock *sk);
+
 static void bgp_listen_sock_err(sock *sk UNUSED, int err);
+static void bgp_sock_err(sock *sk, int err);
+
+static const struct sock_class bgp_listen_sock_class = {
+  .rx_hook = bgp_incoming_connection,
+  .rx_err = bgp_listen_sock_err,
+  .cli_info = bgp_listen_sock_info,
+};
+
+static const struct sock_class bgp_connect_sock_class = {
+  .tx_hook = bgp_connected,
+  .rx_err = bgp_sock_err,
+  .tx_err = bgp_sock_err,
+  .cli_info = bgp_sock_info,
+};
+
+static const struct sock_class bgp_established_sock_class = {
+  .rx_hook = bgp_rx,
+  .tx_hook = bgp_tx,
+  .rx_err = bgp_sock_err,
+  .tx_err = bgp_sock_err,
+  .cli_info = bgp_sock_info,
+};
 
 /**
  * bgp_open - open a BGP instance
@@ -185,12 +208,7 @@ bgp_open(struct bgp_proto *p)
   sk->flags = 0;
   sk->tos = IP_PREC_INTERNET_CONTROL;
 
-  EVENT_LOCKED_INIT(sk, 
-      .rbsize = BGP_RX_BUFFER_SIZE,
-      .rx_hook = bgp_incoming_connection,
-      .rx_err = bgp_listen_sock_err,
-      .cli_info = bgp_listen_sock_info,
-      );
+  sk->class = &bgp_listen_sock_class;
 
   if (sk_open(sk, NULL) < 0)
     goto err;
@@ -236,7 +254,7 @@ bgp_close(struct bgp_proto *p)
   if (--bs->uc)
     return;
 
-  sk_close(bs->sk);
+  sk_close(bs->sk, 0);
 
   rem_node(&bs->n);
   mb_free(bs);
@@ -252,7 +270,7 @@ bgp_close(struct bgp_proto *p)
 }
 
 static void
-bgp_listen_sock_info(LOCKED(event_state), struct birdsock *sk, char *buf, uint len)
+bgp_listen_sock_info(struct birdsock *sk, char *buf, uint len)
 {
   switch (sk->type)
   {
@@ -261,7 +279,7 @@ bgp_listen_sock_info(LOCKED(event_state), struct birdsock *sk, char *buf, uint l
       break;
 
     case SK_TCP:
-      return bgp_sock_info(CURRENT_LOCK, sk, buf, len);
+      return bgp_sock_info(sk, buf, len);
       break;
 
     default:
@@ -270,11 +288,10 @@ bgp_listen_sock_info(LOCKED(event_state), struct birdsock *sk, char *buf, uint l
 }
 
 static void
-bgp_sock_info(LOCKED(event_state), struct birdsock *sk, char *buf, uint len)
+bgp_sock_info(struct birdsock *sk, char *buf, uint len)
 {
   struct bgp_conn *conn = sk->data;
-  bsnprintf(buf, len, "%sconnection of BGP %s, local %I%J port %d remote %I port %d",
-      UNLOCKED_STRUCT(event_state, sk)->rx_hook ? "" : "tx-only ",
+  bsnprintf(buf, len, "connection of BGP %s, local %I%J port %d remote %I port %d",
       conn->bgp->p.name, sk->saddr, sk->iface, sk->sport, sk->daddr, sk->dport);
 }
 
@@ -328,8 +345,7 @@ bgp_startup(struct bgp_proto *p)
   if (p->postponed_sk)
   {
     /* Apply postponed incoming connection */
-    bgp_setup_conn(p, &p->incoming_conn);
-    EVENT_LOCKED bgp_setup_sk(CURRENT_LOCK, &p->incoming_conn, p->postponed_sk);
+    bgp_setup_conn(p, &p->incoming_conn, p->postponed_sk);
     bgp_send_open(&p->incoming_conn);
     p->postponed_sk = NULL;
   }
@@ -372,6 +388,7 @@ err2:
 err1:
   p->p.disabled = 1;
   bgp_store_error(p, NULL, BE_MISC, err_val);
+  ev_cancel(p->event, 0); /* Just to be sure. The event shouldn't be active now. */
   proto_notify_state(&p->p, PS_DOWN);
 
   return;
@@ -424,7 +441,7 @@ bgp_close_conn(struct bgp_conn *conn)
 
   if (conn->sk)
   {
-    sk_close(conn->sk);
+    sk_close(conn->sk, 1);
     conn->sk = NULL;
   }
 
@@ -511,6 +528,7 @@ bgp_down(struct bgp_proto *p)
   }
 
   BGP_TRACE(D_EVENTS, "Down");
+  ev_cancel(p->event, 1);
   proto_notify_state(&p->p, PS_DOWN);
 }
 
@@ -987,11 +1005,8 @@ static void
 bgp_send_open(struct bgp_conn *conn)
 {
   DBG("BGP %s: Sending open\n", conn->bgp->p.name);
-  EVENT_LOCKED
-  {
-    UNLOCKED_STRUCT(event_state, conn->sk)->rx_hook = bgp_rx;
-    UNLOCKED_STRUCT(event_state, conn->sk)->tx_hook = bgp_tx;
-  }
+
+  conn->sk->class = &bgp_established_sock_class;
 
   tm_stop(conn->connect_timer);
   bgp_prepare_capabilities(conn);
@@ -1098,9 +1113,12 @@ bgp_keepalive_timeout(timer *t)
 }
 
 static void
-bgp_setup_conn(struct bgp_proto *p, struct bgp_conn *conn)
+bgp_setup_conn(struct bgp_proto *p, struct bgp_conn *conn, struct birdsock *sk)
 {
-  conn->sk = NULL;
+  if (sk)
+    sk->data = conn;
+
+  conn->sk = sk;
   conn->bgp = p;
 
   conn->packets_to_send = 0;
@@ -1116,23 +1134,13 @@ bgp_setup_conn(struct bgp_proto *p, struct bgp_conn *conn)
 }
 
 static void
-bgp_setup_sk(LOCKED(event_state), struct bgp_conn *conn, sock *s)
-{
-  s->data = conn;
-  UNLOCKED_STRUCT(event_state, s)->rx_err = bgp_sock_err;
-  UNLOCKED_STRUCT(event_state, s)->tx_err = bgp_sock_err;
-  UNLOCKED_STRUCT(event_state, s)->cli_info = bgp_sock_info;
-  conn->sk = s;
-}
-
-static void
 bgp_active(struct bgp_proto *p)
 {
   int delay = MAX(1, p->cf->connect_delay_time);
   struct bgp_conn *conn = &p->outgoing_conn;
 
   BGP_TRACE(D_EVENTS, "Connect delayed by %d seconds", delay);
-  bgp_setup_conn(p, conn);
+  bgp_setup_conn(p, conn, NULL);
   bgp_conn_set_state(conn, BS_ACTIVE);
   bgp_start_timer(conn->connect_timer, delay);
 }
@@ -1166,19 +1174,16 @@ bgp_connect(struct bgp_proto *p)	/* Enter Connect state and start establishing c
   BGP_TRACE(D_EVENTS, "Connecting to %I%J from local address %I%J",
 	    s->daddr, ipa_is_link_local(s->daddr) ? p->cf->iface : NULL,
 	    s->saddr, ipa_is_link_local(s->saddr) ? s->iface : NULL);
-  bgp_setup_conn(p, conn);
 
-  EVENT_LOCKED_INIT(s, 
-      .rbsize = p->cf->enable_extended_messages ? BGP_RX_BUFFER_EXT_SIZE : BGP_RX_BUFFER_SIZE,
-      .tx_hook = bgp_connected,
-      );
+  s->class = &bgp_connect_sock_class;
 
-  EVENT_LOCKED bgp_setup_sk(CURRENT_LOCK, conn, s);
-
+  bgp_setup_conn(p, conn, s);
   bgp_conn_set_state(conn, BS_CONNECT);
 
   if (sk_open(s, &p->p) < 0)
     goto err;
+  
+  sk_set_rbsize(s, p->cf->enable_extended_messages ? BGP_RX_BUFFER_EXT_SIZE : BGP_RX_BUFFER_SIZE);
 
   /* Set minimal receive TTL if needed */
   if (p->cf->ttl_security)
@@ -1304,15 +1309,11 @@ bgp_incoming_connection(sock *sk, byte *buf UNUSED, uint dummy UNUSED)
 
   if (p->cf->enable_extended_messages)
   {
-    EVENT_LOCKED
-    {
-      AUTO_TYPE su = UNLOCKED_STRUCT(event_state, sk);
-      ASSERT_DIE(su->rx_coro == NULL);
-      su->rbsize = BGP_RX_BUFFER_EXT_SIZE;
-    }
-
+    sk_set_rbsize(sk, BGP_RX_BUFFER_EXT_SIZE);
     p->conn->tbsize = BGP_TX_BUFFER_EXT_SIZE;
   }
+  else
+    sk_set_rbsize(sk, BGP_RX_BUFFER_SIZE);
 
   /* For dynamic BGP, spawn new instance and postpone the socket */
   if (bgp_is_dynamic(p))
@@ -1325,8 +1326,7 @@ bgp_incoming_connection(sock *sk, byte *buf UNUSED, uint dummy UNUSED)
   }
 
   rmove(sk, p->p.pool);
-  bgp_setup_conn(p, &p->incoming_conn);
-  EVENT_LOCKED bgp_setup_sk(CURRENT_LOCK, &p->incoming_conn, sk);
+  bgp_setup_conn(p, &p->incoming_conn, sk);
   bgp_send_open(&p->incoming_conn);
   /* RX is scheduled in bgp_send_open() */
   return 0;
@@ -1550,6 +1550,7 @@ bgp_start_locked(struct object_lock *lock)
     /* As we do not start yet, we can just disable protocol */
     p->p.disabled = 1;
     bgp_store_error(p, NULL, BE_MISC, BEM_INVALID_NEXT_HOP);
+    ev_cancel(p->event, 0);
     proto_notify_state(&p->p, PS_DOWN);
     return;
   }

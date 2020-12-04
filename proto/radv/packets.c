@@ -479,6 +479,21 @@ radv_err_hook(sock *sk, int err)
   log(L_ERR "%s: Socket error on %s: %M", ifa->ra->p.name, ifa->iface->name, err);
 }
 
+static void
+radv_cli_info(struct birdsock *sk, char *buf, uint len)
+{
+  bsnprintf(buf, len, "for %s at %s",
+      sk->owner->name, sk->iface->name);
+}
+
+static const struct sock_class radv_sock_class = {
+  .rx_hook = radv_rx_hook,
+  .tx_hook = radv_tx_hook,
+  .rx_err = radv_err_hook,
+  .tx_err = radv_err_hook,
+  .cli_info = radv_cli_info,
+};
+
 int
 radv_sk_open(struct radv_iface *ifa)
 {
@@ -491,13 +506,7 @@ radv_sk_open(struct radv_iface *ifa)
 
   sk->ttl = 255; /* Mandatory for Neighbor Discovery packets */
 
-  EVENT_LOCKED_INIT(sk,
-      .rx_hook = radv_rx_hook,
-      .tx_hook = radv_tx_hook,
-      .rx_err = radv_err_hook,
-      .tx_err = radv_err_hook,
-      .rbsize = 1024, // bufsize(ifa);
-      );
+  sk->class = &radv_sock_class;
 
   sk->iface = ifa->iface;
   sk->data = ifa;
@@ -505,6 +514,8 @@ radv_sk_open(struct radv_iface *ifa)
 
   if (sk_open(sk, &ifa->ra->p) < 0)
     goto err;
+
+  sk_set_rbsize(sk, 1024);
 
   /* We want listen just to ICMPv6 messages of type RS and RA */
   if (sk_set_icmp6_filter(sk, ICMPV6_RS, ICMPV6_RA) < 0)

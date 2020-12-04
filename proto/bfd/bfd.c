@@ -538,7 +538,7 @@ bfd_free_iface(struct bfd_iface *ifa)
     return;
 
   if (ifa->sk)
-    sk_close(ifa->sk);
+    sk_close(ifa->sk, 0);
 
   rem_node(&ifa->n);
   mb_free(ifa);
@@ -551,7 +551,7 @@ bfd_reconfigure_iface(struct bfd_proto *p, struct bfd_iface *ifa, struct bfd_con
   ifa->changed = !!memcmp(nic, ifa->cf, sizeof(struct bfd_iface_config));
 
   /* This should be probably changed to not access ifa->cf from the BFD thread */
-  LOCKED_DO(bfd, p->domain)
+  LOCKED_DO_NOFAIL(bfd, p->domain)
     ifa->cf = nic;
 }
 
@@ -595,7 +595,7 @@ bfd_add_request(struct bfd_proto *p, struct bfd_request *req)
   u8 state, diag;
 
   if (!s)
-    LOCKED_DO(bfd, p->domain)
+    LOCKED_DO_NOFAIL(bfd, p->domain)
       s = bfd_add_session(CURRENT_LOCK, p, req->addr, req->local, req->iface);
 
   rem_node(&req->n);
@@ -697,7 +697,7 @@ bfd_request_free(resource *r)
      inside notify hooks, will be handled by bfd_notify_hook() itself */
 
   if (s && EMPTY_LIST(s->request_list) && !s->notify_running)
-    LOCKED_DO(bfd, s->ifa->bfd->domain)
+    LOCKED_DO_NOFAIL(bfd, s->ifa->bfd->domain)
       bfd_remove_session(CURRENT_LOCK, s->ifa->bfd, s);
 }
 
@@ -860,7 +860,7 @@ bfd_notify_hook(void *P)
 
     /* Remove the session if all requests were removed in notify hooks */
     if (EMPTY_LIST(s->request_list))
-      LOCKED_DO(bfd, p->domain)
+      LOCKED_DO_NOFAIL(bfd, p->domain)
 	bfd_remove_session(CURRENT_LOCK, p, s);
   }
 }
@@ -872,23 +872,12 @@ bfd_timer_loop(void *P)
 
   timeloop_current = &p->loop;
 
-  while (!ev_get_cancelled()) {
+  while (1) {
+    LOCKED_DO(bfd, p->domain, {return;})
+      timers_fire(timeloop_current);
+
     timers_wait(timeloop_current);
-
-    LOCKED_DO(bfd, p->domain)
-      if (!ev_get_cancelled())
-	timers_fire(timeloop_current);
   }
-
-  LOCKED_DO(bfd, p->domain)
-  {
-    DOMAIN_FREE_AFTER_UNLOCK(bfd, p->domain);
-  }
-
-  p->domain = DOMAIN_NULL(bfd);
-
-  THE_BIRD_LOCKED
-    proto_notify_state(&p->p, PS_DOWN);
 }
 
 
@@ -938,7 +927,7 @@ bfd_start(struct proto *P)
 
   add_tail(&bfd_proto_list, &p->bfd_node);
 
-  LOCKED_DO(bfd, p->domain)
+  LOCKED_DO_NOFAIL(bfd, p->domain)
   {
     if (cf->accept_ipv4 && cf->accept_direct)
       p->rx4_1 = bfd_open_rx_sk(p, 0, SK_IPV4);
@@ -978,32 +967,36 @@ bfd_shutdown(struct proto *P)
   list drop_requests;
   init_list(&drop_requests);
 
-  LOCKED_DO(bfd, p->domain)
+  LOCKED_DO_NOFAIL(bfd, p->domain)
   {
-    ev_cancel(&p->timer_loop);
+    /* The timer loop is waiting on poll(). Wake the timer loop
+     * to make it wait on the domain lock */
     timers_ping(&p->loop);
+
+    /* And now we can cancel it */
+    ev_cancel(&p->timer_loop, 0);
 
     if (p->rx4_1)
     {
-      sk_close(p->rx4_1);
+      sk_close(p->rx4_1, 0);
       p->rx4_1 = NULL;
     }
 
     if (p->rx4_m)
     {
-      sk_close(p->rx4_m);
+      sk_close(p->rx4_m, 0);
       p->rx4_m = NULL;
     }
 
     if (p->rx6_1)
     {
-      sk_close(p->rx6_1);
+      sk_close(p->rx6_1, 0);
       p->rx6_1 = NULL;
     }
 
     if (p->rx6_m)
     {
-      sk_close(p->rx6_m);
+      sk_close(p->rx6_m, 0);
       p->rx6_m = NULL;
     }
 
@@ -1012,7 +1005,11 @@ bfd_shutdown(struct proto *P)
       bfd_stop_neighbor(p, n);
 
     bfd_release_requests(CURRENT_LOCK, p, &drop_requests);
+
+    DOMAIN_FREE_AFTER_UNLOCK(bfd, p->domain);
   }
+
+  p->domain = DOMAIN_NULL(bfd);
 
   node *n;
   WALK_LIST_FIRST(n, drop_requests)
@@ -1020,7 +1017,7 @@ bfd_shutdown(struct proto *P)
 
   pthread_spin_destroy(&p->lock);
 
-  return PS_STOP;
+  return PS_DOWN;
 }
 
 static int
@@ -1044,7 +1041,7 @@ bfd_reconfigure(struct proto *P, struct proto_config *c)
   HASH_WALK(p->session_hash_id, next_id, s)
   {
     if (s->ifa->changed)
-      LOCKED_DO(bfd, p->domain)
+      LOCKED_DO_NOFAIL(bfd, p->domain)
 	bfd_reconfigure_session(CURRENT_LOCK, p, s);
   }
   HASH_WALK_END;

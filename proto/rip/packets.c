@@ -987,11 +987,19 @@ drop:
 }
 
 static void
-rip_cli_info(LOCKED(event_state) UNUSED, struct birdsock *sk, char *buf, uint len)
+rip_cli_info(struct birdsock *sk, char *buf, uint len)
 {
   bsnprintf(buf, len, "for %s at %I%J local port %d remote port %d", 
       sk->owner->name, sk->saddr, sk->iface, sk->sport, sk->dport);
 }
+
+static const struct sock_class rip_sock_class = {
+  .rx_hook = rip_rx_hook,
+  .tx_hook = rip_tx_hook,
+  .rx_err = rip_err_hook,
+  .tx_err = rip_err_hook,
+  .cli_info = rip_cli_info,
+};
 
 int
 rip_open_socket(struct rip_iface *ifa)
@@ -1007,14 +1015,7 @@ rip_open_socket(struct rip_iface *ifa)
   sk->saddr = rip_is_v2(p) ? ifa->iface->addr4->ip : ifa->iface->llv6->ip;
   sk->vrf = p->p.vrf;
 
-  EVENT_LOCKED_INIT(sk,
-      .rx_hook = rip_rx_hook,
-      .tx_hook = rip_tx_hook,
-      .rx_err = rip_err_hook,
-      .tx_err = rip_err_hook,
-      .cli_info = rip_cli_info,
-      );
-
+  sk->class = &rip_sock_class;
   sk->data = ifa;
 
   sk->tos = ifa->cf->tx_tos;

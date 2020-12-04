@@ -916,8 +916,16 @@ static void rte_export_event(void *data)
   struct rte_update local_updates[RT_OBS_BUF_SIZE];
   u64 prune_limit = 0;
 
-  while (c->last_export < c->table->total_updates)
+  _Bool loop = 1;
+  while (loop) THE_BIRD_LOCKED ( loop = 0 )
   {
+    if (c->last_export >= c->table->total_updates)
+    {
+      rt_schedule_prune(c->table);
+      loop = 0;
+      continue;
+    }
+
     u64 bpos = c->last_export % RT_OBS_BUF_SIZE;
     u64 epos = c->table->total_updates % RT_OBS_BUF_SIZE;
     u64 total = 0;
@@ -968,18 +976,14 @@ static void rte_export_event(void *data)
       rt_schedule_prune(c->table);
       prune_limit = 0;
     }
-
-    ev_suspend();
   }
-
-  rt_schedule_prune(c->table);
 }
 
 void
 channel_run_exports(struct channel *c)
 {
   if (!c->export_event)
-    c->export_event = ev_new_init(c->proto->pool, rte_export_event, c);
+    c->export_event = ev_new_init_unlocked(c->proto->pool, rte_export_event, c);
   ev_schedule(c->export_event);
 }
 
@@ -2298,6 +2302,9 @@ rt_unlock_table(rtable *r)
 {
   if (!--r->use_count && r->deleted)
     {
+      ev_cancel(r->rt_event, 0);
+      rfree(r->rt_event);
+
       struct config *conf = r->deleted;
       DBG("Deleting routing table %s\n", r->name);
       r->config->table = NULL;
@@ -2307,7 +2314,6 @@ rt_unlock_table(rtable *r)
       fib_free(&r->fib);
       hmap_free(&r->id_map);
       mb_free(r->pending_updates);
-      rfree(r->rt_event);
       mb_free(r);
       config_del_obstacle(conf);
     }
@@ -2423,6 +2429,21 @@ rt_feed_channel_net(struct channel *c, net_addr *n)
   return rt_feed_channel_net_internal(c, nn, 0, TIME_INFINITY);
 }
 
+void
+rt_feed_channel_prepare(struct channel *c)
+{
+  struct fib_iterator *fit = &c->feed_fit;
+
+  ASSERT(c->export_state == ES_FEEDING);
+  ASSERT(!c->refeed_lastmod_max);
+
+/*restart:*/
+  FIB_ITERATE_INIT(fit, &c->table->fib);
+
+  c->last_export = c->table->total_updates;
+  c->refeed_lastmod_max = current_time();
+}
+
 /**
  * rt_feed_channel - advertise all routes to a channel
  * @c: channel to be fed
@@ -2432,29 +2453,21 @@ rt_feed_channel_net(struct channel *c, net_addr *n)
  * has something to do. (We avoid transferring all the routes in single pass in
  * order not to monopolize CPU time.)
  */
-void
+_Bool
 rt_feed_channel(struct channel *c)
 {
   struct fib_iterator *fit = &c->feed_fit;
   int max_feed = 256;
 
   ASSERT(c->export_state == ES_FEEDING);
-  ASSERT(!c->refeed_lastmod_max);
+  ASSERT(c->refeed_lastmod_max);
 
-restart:
-  FIB_ITERATE_INIT(fit, &c->table->fib);
-
-  c->last_export = c->table->total_updates;
-  c->refeed_lastmod_max = current_time();
-
-wakeup:
   FIB_ITERATE_START(&c->table->fib, fit, net, n)
     {
       if (max_feed <= 0)
 	{
 	  FIB_ITERATE_PUT(fit);
-	  ev_suspend();
-	  goto wakeup;
+	  return 1;
 	}
 
       max_feed -= rt_feed_channel_net_internal(c, n, c->refeed_lastmod_min, c->refeed_lastmod_max);
@@ -2464,10 +2477,16 @@ wakeup:
   if (c->table->total_updates - c->last_export > RT_OBS_BUF_SIZE)
   {
     c->refeed_lastmod_min = c->refeed_lastmod_max;
-    goto restart;
+    c->refeed_lastmod_max = 0;
+    rt_feed_channel_prepare(c);
+    return 1;
   }
 
+  /* Cleanup */
+  c->refeed_lastmod_max = 0;
   c->feed_active = 0;
+
+  return 0;
 }
 
 /**

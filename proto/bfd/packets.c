@@ -400,7 +400,7 @@ bfd_rx_hook(sock *sk, byte *buf, uint len)
   if (pkt->snd_id == 0)
     DROP("invalid my discriminator", 0);
 
-  LOCKED_DO(bfd, p->domain)
+  LOCKED_DO(bfd, p->domain, { return 1; })
     bfd_update_session(CURRENT_LOCK, p, sk, pkt);
 
   return 1;
@@ -418,10 +418,16 @@ bfd_err_hook(sock *sk, int err)
 }
 
 static void
-bfd_rx_cli(LOCKED(event_state) UNUSED, struct birdsock *s, char *buf, uint len)
+bfd_rx_cli(struct birdsock *s, char *buf, uint len)
 {
   bsnprintf(buf, len, "for %s %s rx at port %d", s->owner->name, (s->subtype == SK_IPV4) ? "ipv4" : "ipv6", s->sport);
 }
+
+static const struct sock_class bfd_rx_sock_class = {
+  .rx_hook = bfd_rx_hook,
+  .rx_err = bfd_err_hook,
+  .cli_info = bfd_rx_cli,
+};
 
 sock *
 bfd_open_rx_sk(struct bfd_proto *p, int multihop, int af)
@@ -433,12 +439,7 @@ bfd_open_rx_sk(struct bfd_proto *p, int multihop, int af)
   sk->vrf = p->p.vrf;
   sk->data = p;
 
-  EVENT_LOCKED_INIT(sk, 
-      .rbsize = BFD_MAX_LEN,
-      .rx_hook = bfd_rx_hook,
-      .rx_err = bfd_err_hook,
-      .cli_info = bfd_rx_cli,
-      );
+  sk->class = &bfd_rx_sock_class;
 
   /* TODO: configurable ToS and priority */
   sk->tos = IP_PREC_INTERNET_CONTROL;
@@ -448,6 +449,7 @@ bfd_open_rx_sk(struct bfd_proto *p, int multihop, int af)
   if (sk_open(sk, &p->p) < 0)
     goto err;
 
+  sk_set_rbsize(sk, BFD_MAX_LEN);
   sk_schedule_rx(sk);
   return sk;
 
@@ -458,10 +460,15 @@ bfd_open_rx_sk(struct bfd_proto *p, int multihop, int af)
 }
 
 static void
-bfd_tx_cli(LOCKED(event_state) UNUSED, struct birdsock *s, char *buf, uint len)
+bfd_tx_cli(struct birdsock *s, char *buf, uint len)
 {
   bsnprintf(buf, len, "for %s tx from %I%J to port %d", s->owner->name, s->saddr, s->iface, s->dport);
 }
+
+static const struct sock_class bfd_tx_sock_class = {
+  .tx_err = bfd_err_hook,
+  .cli_info = bfd_tx_cli,
+};
 
 sock *
 bfd_open_tx_sk(struct bfd_proto *p, ip_addr local, struct iface *ifa)
@@ -474,10 +481,7 @@ bfd_open_tx_sk(struct bfd_proto *p, ip_addr local, struct iface *ifa)
   sk->vrf = p->p.vrf;
   sk->data = p;
 
-  EVENT_LOCKED_INIT(sk,
-      .tx_err = bfd_err_hook,
-      .cli_info = bfd_tx_cli,
-      );
+  sk->class = &bfd_tx_sock_class;
 
   /* TODO: configurable ToS, priority and TTL security */
   sk->tos = IP_PREC_INTERNET_CONTROL;

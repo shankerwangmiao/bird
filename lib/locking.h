@@ -31,7 +31,7 @@ extern _Thread_local struct lock_order locking_stack;
 extern _Thread_local struct domain_generic **last_locked;
 
 /* Internal for locking */
-void do_lock(struct domain_generic *dg, struct domain_generic **lsp);
+USE_RESULT _Bool do_lock(struct domain_generic *dg, struct domain_generic **lsp);
 void do_unlock(struct domain_generic *dg, struct domain_generic **lsp);
 
 #define DOMAIN(type) struct domain__##type
@@ -57,14 +57,16 @@ void domain_free_after_unlock(struct domain_generic *dg);
 #define SUPER_LOCK(type)  ({ ASSERT_DIE(IS_LOCKED(type)); (DOMAIN(type)) { .type = locking_stack.type }; })
 
 /* Uncoupled lock/unlock, don't use directly */
-#define LOCK_DOMAIN(type, d)	LOCKED(type) = (do_lock(((d).type), &(locking_stack.type)), (d))
+#define LOCK_DOMAIN(type, d)	LOCKED(type) = (do_lock(((d).type), &(locking_stack.type)) ? (d) : (DOMAIN(type)) {})
 #define UNLOCK_DOMAIN(type, d)  do_unlock(((d).type), &(locking_stack.type))
 
-/* Do something in a locked context */
-#define LOCKED_DO(type, d) for ( \
+/* Do something in a locked context; run cleanup if unsuccessful */
+#define LOCKED_DO(type, d, cleanup) for ( \
     LOCK_DOMAIN(type, d), _bird_aux = (d); \
-    _bird_aux.type ? ((_bird_aux.type = NULL), 1) : 0; \
+    CURRENT_LOCK.type ? (_bird_aux.type ? ((_bird_aux.type = NULL), 1) : 0) : ((cleanup), 0); \
     UNLOCK_DOMAIN(type, d))
+
+#define LOCKED_DO_NOFAIL(type, d) LOCKED_DO(type, d, bug("Invalid cancellation at %s:%d", __FILE__, __LINE__))
 
 /* Part of struct that should be accessed only with a locked lock */
 #define LOCKED_STRUCT(lock_type, ...) struct { \
@@ -119,9 +121,8 @@ void domain_free_after_unlock(struct domain_generic *dg);
 DEFINE_DOMAIN(event_state);
 extern DOMAIN(event_state) event_state_domain;
 
-#define EVENT_LOCKED LOCKED_DO(event_state, event_state_domain)
-#define EVENT_LOCKED_GET(str, var)  LOCKED_GET(event_state, str, event_state_domain, var)
-#define EVENT_LOCKED_SET(str, var, val)  LOCKED_SET(event_state, str, event_state_domain, var, val)
+#define EVENT_LOCKED(cancel) LOCKED_DO(event_state, event_state_domain, cancel)
+#define EVENT_LOCKED_NOFAIL LOCKED_DO_NOFAIL(event_state, event_state_domain)
 #define EVENT_LOCKED_INIT(str, ...) LOCKED_STRUCT_INIT(event_state, str, event_state_domain, __VA_ARGS__)
 #define EVENT_LOCKED_INIT_LOCK(str) LOCKED_STRUCT_INIT_LOCK(event_state, str, event_state_domain)
 
@@ -132,17 +133,7 @@ extern DOMAIN(the_bird) the_bird_domain;
 #define the_bird_lock()		do_lock(the_bird_domain.the_bird, &locking_stack.the_bird)
 #define the_bird_unlock()	do_unlock(the_bird_domain.the_bird, &locking_stack.the_bird)
 
-#define THE_BIRD_LOCKED for ( \
-    UNUSED LOCK_DOMAIN(the_bird, the_bird_domain), *_bird_aux = &the_bird_domain; \
-    _bird_aux ? ((_bird_aux = NULL), 1) : 0; \
-    UNLOCK_DOMAIN(the_bird, the_bird_domain))
-
-#define THE_BIRD_LOCKED_RETURN(expr) return ({ \
-    UNUSED LOCK_DOMAIN(the_bird, the_bird_domain); \
-    AUTO_TYPE _ret = expr; \
-    UNLOCK_DOMAIN(the_bird, the_bird_domain); \
-    _ret; \
-    })
+#define THE_BIRD_LOCKED(cleanup)  LOCKED_DO(the_bird, the_bird_domain, cleanup)
 
 #define assert_bird_lock() ASSERT_DIE(SUPER_LOCK(the_bird).the_bird == the_bird_domain.the_bird)
 

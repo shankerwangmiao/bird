@@ -505,7 +505,7 @@ ospf_shutdown(struct proto *P)
   OSPF_TRACE(D_EVENTS, "Shutdown requested");
 
   tm_stop(p->disp_timer);
-  ev_cancel(p->flood_event);
+  ev_cancel(p->flood_event, 0);
 
   if ((P->down_code == PDC_CMD_GR_DOWN) && (p->gr_mode == OSPF_GR_ABLE))
   {

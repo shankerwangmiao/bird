@@ -52,6 +52,19 @@ rpki_hostname_autoresolv(const char *host)
   return addr;
 }
 
+static void rpki_connect_sock_info(sock *sk, char *buf, uint len)
+{
+  bsnprintf(buf, len, "connecting to %I port %d for RPKI %s",
+      sk->daddr, sk->dport, sk->owner->name);
+}
+
+static const struct sock_class rpki_connect_sock_class = {
+  .tx_hook = rpki_connected_hook,
+  .tx_err = rpki_err_hook,
+  .rx_err = rpki_err_hook,
+  .cli_info = rpki_connect_sock_info,
+};
+
 /**
  * rpki_tr_open - prepare and open a socket connection
  * @tr: initialized transport socket
@@ -70,15 +83,10 @@ rpki_tr_open(struct rpki_tr_sock *tr)
   tr->sk = sk_new(cache->pool);
   sock *sk = tr->sk;
 
+  sk->class = &rpki_connect_sock_class;
+
   /* sk->type -1 is invalid value, a correct value MUST be set in the specific transport layer in open_fp() hook */
   sk->type = -1;
-
-  EVENT_LOCKED_INIT(sk,
-      .tx_hook = rpki_connected_hook,
-      .tx_err = rpki_err_hook,
-      .rx_err = rpki_err_hook,
-      .rbsize = RPKI_RX_BUFFER_SIZE,
-      );
 
   sk->data = cache;
   sk->daddr = cf->ip;

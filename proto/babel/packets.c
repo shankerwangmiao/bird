@@ -1470,11 +1470,20 @@ drop:
 }
 
 static void
-babel_sock_info(UNUSED LOCKED(event_state), struct birdsock *sk, char *buf, uint len)
+babel_sock_info(struct birdsock *sk, char *buf, uint len)
 {
   bsnprintf(buf, len, "for Babel %s at %I%J sport %d dport %d",
       sk->owner->name, sk->saddr, sk->iface, sk->sport, sk->dport);
 }
+
+static const struct sock_class babel_sock_class = {
+  .rx_hook = babel_rx_hook,
+  .tx_hook = babel_tx_hook,
+  .rx_err = babel_err_hook,
+  .tx_err = babel_err_hook,
+  .cli_info = babel_sock_info,
+};
+
 
 int
 babel_open_socket(struct babel_iface *ifa)
@@ -1490,13 +1499,7 @@ babel_open_socket(struct babel_iface *ifa)
   sk->saddr = ifa->addr;
   sk->vrf = p->p.vrf;
 
-  EVENT_LOCKED_INIT(sk, 
-      .rx_hook = babel_rx_hook,
-      .tx_hook = babel_tx_hook,
-      .rx_err = babel_err_hook,
-      .tx_err = babel_err_hook,
-      .cli_info = babel_sock_info,
-      );
+  sk->class = &babel_sock_class;
 
   sk->data = ifa;
 

@@ -470,12 +470,8 @@ ospf_rx_hook(sock *sk, byte *buf, uint len)
     uint bs = plen + 256;
     bs = BIRD_ALIGN(bs, 1024);
 
-    EVENT_LOCKED
-    {
-      AUTO_TYPE su = UNLOCKED_STRUCT(event_state, sk);
-      if (!ifa->cf->rx_buffer && (bs > su->rbsize))
-	su->rbsize = bs;
-    }
+    if (!ifa->cf->rx_buffer)
+      sk_set_rbsize(sk, bs);
 
     DROP("truncated", plen);
   }
