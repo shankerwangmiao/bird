@@ -170,7 +170,7 @@ cli_hello(cli *c)
 
 _Thread_local static byte *cli_rh_pos;
 _Thread_local static uint cli_rh_len;
-_Thread_local static int cli_rh_trick_flag;
+_Thread_local extern int cli_rh_trick_flag;
 _Thread_local struct cli *this_cli;
 
 /* Hack for scheduled undo notification */
@@ -190,12 +190,6 @@ cli_free(cli *c)
 static int
 cli_cmd_read_hook(byte *buf, uint max, UNUSED int fd)
 {
-  if (!cli_rh_trick_flag)
-    {
-      cli_rh_trick_flag = 1;
-      buf[0] = '!';
-      return 1;
-    }
   if (max > cli_rh_len)
     max = cli_rh_len;
   memcpy(buf, cli_rh_pos, max);
@@ -219,7 +213,7 @@ cli_command(struct cli *c, byte *buf, uint len)
   cf_read_hook = cli_cmd_read_hook;
   cli_rh_pos = buf;
   cli_rh_len = len;
-  cli_rh_trick_flag = 0;
+  cli_rh_trick_flag = 1;
   this_cli = c;
   lp_flush(c->parser_pool);
   res = cli_parse(&f);

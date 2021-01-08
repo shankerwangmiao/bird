@@ -92,6 +92,7 @@ struct sym_scope *conf_this_scope;
 
 linpool *cfg_mem;
 
+_Thread_local int cli_rh_trick_flag;
 int (*cf_read_hook)(byte *buf, unsigned int max, int fd);
 struct include_file_stack *ifs;
 static struct include_file_stack *ifs_head;
@@ -124,7 +125,7 @@ static enum yytokentype cf_lex_symbol(const char *data);
 %option nounput
 %option noreject
 
-%x COMMENT CCOMM CLI QUOTED APOSTROPHED INCLUDE
+%x COMMENT CCOMM QUOTED APOSTROPHED INCLUDE
 
 ALPHA [a-zA-Z_]
 DIGIT [0-9]
@@ -133,6 +134,15 @@ ALNUM [a-zA-Z_0-9]
 WHITE [ \t]
 
 %%
+
+%{
+  if (cli_rh_trick_flag)
+  {
+    cli_rh_trick_flag = 0;
+    return CLI_MARKER;
+  }
+%}
+
 ^{WHITE}*include{WHITE}*\" {
   if (!ifs->depth)
     cf_error("Include not allowed in CLI");
@@ -305,11 +315,6 @@ else: {
 
 ({ALPHA}{ALNUM}*) {
   return cf_lex_symbol(yytext);
-}
-
-<CLI>(.|\n) {
-  BEGIN(INITIAL);
-  return CLI_MARKER;
 }
 
 \.\. {
@@ -714,10 +719,7 @@ cf_lex_init(int is_cli, struct config *c)
   yyrestart(NULL);
   ifs->buffer = YY_CURRENT_BUFFER;
 
-  if (is_cli)
-    BEGIN(CLI);
-  else
-    BEGIN(INITIAL);
+  BEGIN(INITIAL);
 
   c->root_scope = cfg_allocz(sizeof(struct sym_scope));
   conf_this_scope = c->root_scope;
