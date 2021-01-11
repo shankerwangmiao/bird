@@ -992,6 +992,12 @@ krt_sock_err_hook(sock *sk, int e UNUSED)
   krt_sock_hook(sk, 0);
 }
 
+static const struct sock_class krt_sock_class = {
+  .rx_hook = krt_sock_hook,
+  .cli_info = krt_sock_info,
+  .rx_err = krt_sock_err_hook,
+};
+
 static sock *
 krt_sock_open(pool *pool, void *data, int table_id UNUSED)
 {
@@ -1012,12 +1018,7 @@ krt_sock_open(pool *pool, void *data, int table_id UNUSED)
 
   sk = sk_new(pool);
   sk->type = SK_MAGIC;
-
-  EVENT_LOCKED_INIT(sk,
-      .rx_hook = krt_sock_hook,
-      .cli_info = krt_sock_info,
-      .rx_err = krt_sock_err_hook,
-      );
+  sk->class = &krt_sock_class;
 
   sk->fd = fd;
   sk->data = data;
