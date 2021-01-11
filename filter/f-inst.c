@@ -516,6 +516,7 @@
       case SA_DEST:	RESULT(sa.f_type, i, rta->dest); break;
       case SA_IFNAME:	RESULT(sa.f_type, s, rta->nh.iface ? rta->nh.iface->name : ""); break;
       case SA_IFINDEX:	RESULT(sa.f_type, i, rta->nh.iface ? rta->nh.iface->index : 0); break;
+      case SA_WEIGHT:	RESULT(sa.f_type, i, rta->nh.weight + 1); break;
       case SA_PREF:	RESULT(sa.f_type, i, rta->pref); break;
 
       default:
@@ -585,6 +586,20 @@
 	  rta->nh.next = NULL;
 	  rta->hostentry = NULL;
 	}
+	break;
+
+      case SA_WEIGHT:
+        {
+	  int i = v1.val.i;
+	  if (i < 1 || i > 256)
+	    runtime( "Setting weight value out of bounds" );
+	  if (rta->dest != RTD_UNICAST)
+	    runtime( "Setting weight needs regular nexthop " );
+
+	  /* Set weight on all next hops */
+	  for (struct nexthop *nh = &rta->nh; nh; nh = nh->next)
+	    nh->weight = i - 1;
+        }
 	break;
 
       case SA_PREF:
@@ -898,18 +913,17 @@
     uint retpos = fstk->vcnt;
 
     /* Drop every sub-block including ourselves */
-    while ((fstk->ecnt-- > 0) && !(fstk->estk[fstk->ecnt].emask & FE_RETURN))
-      ;
+    do fstk->ecnt--;
+    while ((fstk->ecnt > 0) && !(fstk->estk[fstk->ecnt].emask & FE_RETURN));
 
     /* Now we are at the caller frame; if no such, try to convert to accept/reject. */
     if (!fstk->ecnt)
+    {
       if (fstk->vstk[retpos].type == T_BOOL)
-	if (fstk->vstk[retpos].val.i)
-	  return F_ACCEPT;
-	else
-	  return F_REJECT;
+	return (fstk->vstk[retpos].val.i) ? F_ACCEPT :  F_REJECT;
       else
 	runtime("Can't return non-bool from non-function");
+    }
 
     /* Set the value stack position, overwriting the former implicit void */
     fstk->vcnt = fstk->estk[fstk->ecnt].ventry - 1;

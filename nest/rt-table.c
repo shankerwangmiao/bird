@@ -56,6 +56,10 @@
 #include "proto/bgp/bgp.h"
 #endif
 
+#ifdef CONFIG_BABEL
+#include "proto/babel/babel.h"
+#endif
+
 #include <stdlib.h>
 
 pool *rt_table_pool;
@@ -405,26 +409,30 @@ rte_mergable(struct rte_storage *pri, struct rte_storage *sec)
 #define RTE_TRACE_TO_DEBUG
 
 static void
-rte_trace(struct proto *p, rte *e, int dir, char *msg)
+rte_trace(struct channel *c, rte *e, int dir, char *msg)
 {
-  log(L_TRACE "%s %c %s %N %s", p->name, dir, msg, e->net, e->attrs ? rta_dest_name(e->attrs->dest) : "?");
+  log(L_TRACE "%s.%s %c %s %N %s",
+      c->proto->name, c->name ?: "?", dir, msg, e->net,
+      rta_dest_name(e->attrs->dest));
 #ifdef TRACE_TO_DEBUG
-  debug("%s %c %s %N %s", p->name, dir, msg, e->net, rta_dest_name(e->attrs->dest) : "?");
+  debug("%s.%s %c %s %N %s",
+      c->proto->name, c->name ?: "?", dir, msg, e->net,
+      rta_dest_name(e->attrs->dest));
 #endif
 }
 
 static inline void
-rte_trace_in(uint flag, struct proto *p, rte *e, char *msg)
+rte_trace_in(uint flag, struct channel *c, rte *e, char *msg)
 {
-  if (p->debug & flag)
-    rte_trace(p, e, '>', msg);
+  if ((c->debug & flag) || (c->proto->debug & flag))
+    rte_trace(c, e, '>', msg);
 }
 
 static inline void
-rte_trace_out(uint flag, struct proto *p, rte *e, char *msg)
+rte_trace_out(uint flag, struct channel *c, rte *e, char *msg)
 {
-  if (p->debug & flag)
-    rte_trace(p, e, '<', msg);
+  if ((c->debug & flag) || (c->proto->debug & flag))
+    rte_trace(c, e, '<', msg);
 }
 
 enum export_filter_result
@@ -449,14 +457,14 @@ export_filter_(struct channel *c, struct rte *rt, u32 id, linpool *pool, int sil
 
       stats->exp_updates_rejected++;
       if (v == RIC_REJECT)
-	rte_trace_out(D_FILTERS, p, rt, "rejected by protocol");
+	rte_trace_out(D_FILTERS, c, rt, "rejected by protocol");
       goto reject;
     }
   if (v > 0)
     {
       efr = EFR_PREEXPORT_ACCEPT;
       if (!silent)
-	rte_trace_out(D_FILTERS, p, rt, "forced accept by protocol");
+	rte_trace_out(D_FILTERS, c, rt, "forced accept by protocol");
       goto accept;
     }
 
@@ -470,7 +478,7 @@ export_filter_(struct channel *c, struct rte *rt, u32 id, linpool *pool, int sil
 	goto reject;
 
       stats->exp_updates_filtered++;
-      rte_trace_out(D_FILTERS, p, rt, "filtered out");
+      rte_trace_out(D_FILTERS, c, rt, "filtered out");
       goto reject;
     }
 
@@ -714,7 +722,6 @@ rte_export_limits(struct channel *c, struct rte_export_internal *e)
 {
   struct rte_export *ep = &(e->pub);
 
-  struct proto *p = c->proto;
   struct proto_stats *stats = &c->stats;
 
   if (e->refeed && ep->new.attrs)
@@ -730,7 +737,7 @@ rte_export_limits(struct channel *c, struct rte_export_internal *e)
     if (l->state == PLS_BLOCKED)
     {
       stats->exp_updates_rejected++;
-      rte_trace_out(D_FILTERS, p, &ep->new, "rejected [limit]");
+      rte_trace_out(D_FILTERS, c, &ep->new, "rejected [limit]");
       return 0;
     }
   }
@@ -781,9 +788,9 @@ rte_export_meta(struct channel *c, struct rte_export *ep)
     switch (rte_export_kind(ep))
     {
       case REX_NOTHING:		bug("Idempotent exports should have been ignored by now");
-      case REX_ANNOUNCEMENT:	rte_trace_out(D_ROUTES, p, &ep->new, "added"); break;
-      case REX_WITHDRAWAL:	rte_trace_out(D_ROUTES, p, &ep->old, "removed"); break;
-      case REX_UPDATE:		rte_trace_out(D_ROUTES, p, &ep->new, "replaced"); break;
+      case REX_ANNOUNCEMENT:	rte_trace_out(D_ROUTES, c, &ep->new, "added"); break;
+      case REX_WITHDRAWAL:	rte_trace_out(D_ROUTES, c, &ep->old, "removed"); break;
+      case REX_UPDATE:		rte_trace_out(D_ROUTES, c, &ep->new, "replaced"); break;
     }
 }
 
@@ -1231,22 +1238,22 @@ rte_recalculate(net *net, struct rte_storage *new, struct rte_storage *old, stru
     }
 
   /* Log the route change */
-  if (p->debug & D_ROUTES)
+  if ((c->debug & D_ROUTES) || (p->debug & D_ROUTES))
     {
       if (new_ok)
       {
 	rte new_copy = rte_copy(new);
-	rte_trace(p, &new_copy, '>', new == net->routes ? "added [best]" : "added");
+	rte_trace(c, &new_copy, '>', new == net->routes ? "added [best]" : "added");
       }
       else if (old_ok)
 	{
 	  rte old_copy = rte_copy(old);
 	  if (old != old_best)
-	    rte_trace(p, &old_copy, '>', "removed");
+	    rte_trace(c, &old_copy, '>', "removed");
 	  else if (net->routes && !rte_is_filtered(net->routes))
-	    rte_trace(p, &old_copy, '>', "removed [replaced]");
+	    rte_trace(c, &old_copy, '>', "removed [replaced]");
 	  else
-	    rte_trace(p, &old_copy, '>', "removed [sole]");
+	    rte_trace(c, &old_copy, '>', "removed [sole]");
 	}
     }
 
@@ -1341,7 +1348,7 @@ rte_update2(rte *new)
       if ((filter == FILTER_REJECT) || (filter && (f_run(filter, new, rte_update_pool, 0) > F_ACCEPT)))
 	{
 	  stats->imp_updates_filtered++;
-	  rte_trace_in(D_FILTERS, p, new, "filtered out");
+	  rte_trace_in(D_FILTERS, c, new, "filtered out");
 	  filtered = 1;
 	}
     }
@@ -1399,7 +1406,7 @@ rte_update2(rte *new)
       if (!filtered)
 	{
 	  stats->imp_updates_ignored++;
-	  rte_trace_in(D_ROUTES, p, new, "ignored");
+	  rte_trace_in(D_ROUTES, c, new, "ignored");
 	}
 
       return;
@@ -1422,7 +1429,7 @@ rte_update2(rte *new)
 	     we just free new and exit like nothing happened */
 
 	  stats->imp_updates_ignored++;
-	  rte_trace_in(D_FILTERS, p, new, "ignored [limit]");
+	  rte_trace_in(D_FILTERS, c, new, "ignored [limit]");
 	  return;
 	}
     }
@@ -1443,7 +1450,7 @@ rte_update2(rte *new)
 	     already handled. */
 
 	  stats->imp_updates_ignored++;
-	  rte_trace_in(D_FILTERS, p, new, "ignored [limit]");
+	  rte_trace_in(D_FILTERS, c, new, "ignored [limit]");
 
 	  if (c->in_keep_filtered)
 	    filtered = 1;
@@ -1485,7 +1492,7 @@ rte_update2(rte *new)
   if (new->attrs)
   {
     stats->imp_updates_invalid++;
-    rte_trace_in(D_FILTERS, p, new, "invalid");
+    rte_trace_in(D_FILTERS, c, new, "invalid");
   }
   else
     stats->imp_withdraws_invalid++;
@@ -2076,7 +2083,7 @@ rt_next_hop_update_rte(struct rte_storage *old)
     .generation = old->generation,
   };
 
-  rte_trace_in(D_ROUTES, old->sender->proto, &e, "updated");
+  rte_trace_in(D_ROUTES, old->sender, &e, "updated");
 
   struct rte_storage *new = rte_store(&e, old->net);
   rte_copy_metadata(new, old);
@@ -2178,7 +2185,7 @@ rt_next_hop_update_net(rtable *tab, net *n)
     }
 
     rte new_copy = rte_copy(updates[i].new);
-    rte_trace(updates[i].new->sender->proto, &new_copy, '~',
+    rte_trace(updates[i].new->sender, &new_copy, '~',
 	"recursive hexthop update");
   }
 
@@ -2196,7 +2203,7 @@ rt_next_hop_update_net(rtable *tab, net *n)
   }
 
   rte best_copy = rte_copy(n->routes);
-  rte_trace(best_copy.sender->proto, &best_copy, '~',
+  rte_trace(best_copy.sender, &best_copy, '~',
       (n->routes == old_best) ? "best not changed" : "best chosen");
 
   /* First announce all the non-old-best changes */
@@ -2579,7 +2586,10 @@ rte_update_in(rte *new)
 
     if (l->state == PLS_BLOCKED)
     {
-      rte_trace_in(D_FILTERS, c->proto, new, "ignored [limit]");
+      /* Required by rte_trace_in() */
+      new->net = net->n.addr;
+
+      rte_trace_in(D_FILTERS, c, new, "ignored [limit]");
       goto drop_update;
     }
   }
@@ -2941,6 +2951,11 @@ rt_get_igp_metric(rta *a)
     u64 metric = bgp_total_aigp_metric(a);
     return (u32) MIN(metric, (u64) IGP_METRIC_UNKNOWN);
   }
+#endif
+
+#ifdef CONFIG_BABEL
+  if (a->source == RTS_BABEL)
+    return ea_find(a->eattrs, EA_BABEL_METRIC)->u.data;
 #endif
 
   if (a->source == RTS_DEVICE)

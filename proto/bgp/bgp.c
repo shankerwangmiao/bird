@@ -105,8 +105,7 @@
  * draft-uttaro-idr-bgp-persistence-04
  */
 
-//#undef LOCAL_DEBUG
-#define LOCAL_DEBUG
+#undef LOCAL_DEBUG
 
 #include <stdlib.h>
 
@@ -134,7 +133,7 @@ static void bgp_connect(struct bgp_proto *p);
 static void bgp_active(struct bgp_proto *p);
 static void bgp_setup_conn(struct bgp_proto *p, struct bgp_conn *conn, struct birdsock *sk);
 static void bgp_send_open(struct bgp_conn *conn);
-static void bgp_update_bfd(struct bgp_proto *p, int use_bfd);
+static void bgp_update_bfd(struct bgp_proto *p, const struct bfd_options *bfd);
 static void bgp_listen_sock_info(struct birdsock *s, char *buf, uint len);
 static void bgp_sock_info(struct birdsock *s, char *buf, uint len);
 
@@ -1419,7 +1418,7 @@ bgp_bfd_notify(struct bfd_request *req)
     BGP_TRACE(D_EVENTS, "BFD session down");
     bgp_store_error(p, NULL, BE_MISC, BEM_BFD_DOWN);
 
-    if (p->cf->bfd == BGP_BFD_GRACEFUL)
+    if (req->opts.mode == BGP_BFD_GRACEFUL)
     {
       /* Trigger graceful restart */
       if (p->conn && (p->conn->state == BS_ESTABLISHED) && p->gr_ready)
@@ -1442,14 +1441,17 @@ bgp_bfd_notify(struct bfd_request *req)
 }
 
 static void
-bgp_update_bfd(struct bgp_proto *p, int use_bfd)
+bgp_update_bfd(struct bgp_proto *p, const struct bfd_options *bfd)
 {
-  if (use_bfd && !p->bfd_req && !bgp_is_dynamic(p))
+  if (bfd && p->bfd_req)
+    bfd_update_request(p->bfd_req, bfd);
+
+  if (bfd && !p->bfd_req && !bgp_is_dynamic(p))
     p->bfd_req = bfd_request_session(p->p.pool, p->remote_ip, p->local_ip,
 				     p->cf->multihop ? NULL : p->neigh->iface,
-				     p->p.vrf, bgp_bfd_notify, p);
+				     p->p.vrf, bgp_bfd_notify, p, bfd);
 
-  if (!use_bfd && p->bfd_req)
+  if (!bfd && p->bfd_req)
   {
     rfree(p->bfd_req);
     p->bfd_req = NULL;
@@ -2047,10 +2049,6 @@ bgp_postconfig(struct proto_config *CF)
     if (cc->next_hop_keep == 0xff)
       cc->next_hop_keep = cf->rr_client ? NH_IBGP : (cf->rs_client ? NH_ALL : NH_NO);
 
-    /* Different default based on rs_client */
-    if (!cc->missing_lladdr)
-      cc->missing_lladdr = cf->rs_client ? MLL_IGNORE : MLL_SELF;
-
     /* Different default for gw_mode */
     if (!cc->gw_mode)
       cc->gw_mode = cf->multihop ? GW_RECURSIVE : GW_DIRECT;
@@ -2192,7 +2190,6 @@ bgp_channel_reconfigure(struct channel *C, struct channel_config *CC, int *impor
   if (!ipa_equal(new->next_hop_addr, old->next_hop_addr) ||
       (new->next_hop_self != old->next_hop_self) ||
       (new->next_hop_keep != old->next_hop_keep) ||
-      (new->missing_lladdr != old->missing_lladdr) ||
       (new->aigp != old->aigp) ||
       (new->aigp_originate != old->aigp_originate))
     *export_changed = 1;
@@ -2202,9 +2199,18 @@ bgp_channel_reconfigure(struct channel *C, struct channel_config *CC, int *impor
 }
 
 static void
-bgp_copy_config(struct proto_config *dest UNUSED, struct proto_config *src UNUSED)
+bgp_copy_config(struct proto_config *dest, struct proto_config *src)
 {
-  /* Just a shallow copy */
+  struct bgp_config *d = (void *) dest;
+  struct bgp_config *s = (void *) src;
+
+  /* Copy BFD options */
+  if (s->bfd)
+  {
+    struct bfd_options *opts = cfg_alloc(sizeof(struct bfd_options));
+    memcpy(opts, s->bfd, sizeof(struct bfd_options));
+    d->bfd = opts;
+  }
 }
 
 

@@ -89,6 +89,14 @@ sl_alloc(slab *s)
   return o->data;
 }
 
+void *
+sl_allocz(slab *s)
+{
+  void *obj = sl_alloc(s);
+  memset(obj, 0, s->size);
+  return obj;
+}
+
 void
 sl_free(slab *s, void *oo)
 {
@@ -267,12 +275,20 @@ no_partial:
   goto okay;
 }
 
+/**
+ * sl_allocz - allocate an object from Slab and zero it
+ * @s: slab
+ *
+ * sl_allocz() allocates space for a single object from the
+ * Slab and returns a pointer to the object after zeroing out
+ * the object memory.
+ */
 void *
 sl_allocz(slab *s)
 {
-  void *out = sl_alloc(s);
-  memset(out, 0, s->data_size);
-  return out;
+  void *obj = sl_alloc(s);
+  memset(obj, 0, s->data_size);
+  return obj;
 }
 
 /**

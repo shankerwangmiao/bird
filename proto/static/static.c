@@ -49,6 +49,9 @@
 
 static linpool *static_lp;
 
+static inline struct rte_src * static_get_source(struct static_proto *p, uint i)
+{ return i ? rt_get_source(&p->p, i) : p->p.main_source; }
+
 static void
 static_announce_rte(struct static_proto *p, struct static_route *r)
 {
@@ -100,7 +103,7 @@ static_announce_rte(struct static_proto *p, struct static_route *r)
 
   rte e0 = {
     .attrs = a,
-    .src = p->p.main_source,
+    .src = static_get_source(p, r->index),
     .net = r->net,
     .sender = p->p.main_channel,
   };
@@ -120,7 +123,7 @@ withdraw:
   if (r->state == SRS_DOWN)
     return;
 
-  rte_withdraw(p->p.main_channel, r->net, p->p.main_source);
+  rte_withdraw(p->p.main_channel, r->net, static_get_source(p, r->index));
   r->state = SRS_DOWN;
 }
 
@@ -163,7 +166,7 @@ static_update_bfd(struct static_proto *p, struct static_route *r)
     // ip_addr local = ipa_nonzero(r->local) ? r->local : nb->ifa->ip;
     r->bfd_req = bfd_request_session(p->p.pool, r->via, nb->ifa->ip,
 				     nb->iface, p->p.vrf,
-				     static_bfd_notify, r);
+				     static_bfd_notify, r, NULL);
   }
 
   if (!bfd_up && r->bfd_req)
@@ -252,7 +255,7 @@ static void
 static_remove_rte(struct static_proto *p, struct static_route *r)
 {
   if (r->state)
-    rte_withdraw(p->p.main_channel, r->net, p->p.main_source);
+    rte_withdraw(p->p.main_channel, r->net, static_get_source(p, r->index));
 
   static_reset_rte(p, r);
 }
@@ -356,11 +359,22 @@ static_bfd_notify(struct bfd_request *req)
 }
 
 static int
-static_rte_mergable(struct rte_storage *pri UNUSED, struct rte_storage *sec UNUSED)
+static_rte_better(struct rte_storage *new, struct rte_storage *old)
 {
-  return 1;
+  u32 n = ea_get_int(new->attrs->eattrs, EA_GEN_IGP_METRIC, IGP_METRIC_UNKNOWN);
+  u32 o = ea_get_int(old->attrs->eattrs, EA_GEN_IGP_METRIC, IGP_METRIC_UNKNOWN);
+  return n < o;
 }
 
+static int
+static_rte_mergable(struct rte_storage *pri, struct rte_storage *sec)
+{
+  u32 a = ea_get_int(pri->attrs->eattrs, EA_GEN_IGP_METRIC, IGP_METRIC_UNKNOWN);
+  u32 b = ea_get_int(sec->attrs->eattrs, EA_GEN_IGP_METRIC, IGP_METRIC_UNKNOWN);
+  return a == b;
+}
+
+static void static_index_routes(struct static_config *cf);
 
 static void
 static_postconfig(struct proto_config *CF)
@@ -384,6 +398,8 @@ static_postconfig(struct proto_config *CF)
   WALK_LIST(r, cf->routes)
     if (r->net && (r->net->type != CF->net_type))
       cf_error("Route %N incompatible with channel type", r->net);
+
+  static_index_routes(cf);
 }
 
 static struct proto *
@@ -396,6 +412,7 @@ static_init(struct proto_config *CF)
   P->main_channel = proto_add_channel(P, proto_cf_main_channel(CF));
 
   P->neigh_notify = static_neigh_notify;
+  P->rte_better = static_rte_better;
   P->rte_mergable = static_rte_mergable;
 
   if (cf->igp_table_ip4)
@@ -465,7 +482,7 @@ static_cleanup(struct proto *P)
 static void
 static_dump_rte(struct static_route *r)
 {
-  debug("%-1N: ", r->net);
+  debug("%-1N (%u): ", r->net, r->index);
   if (r->dest == RTD_UNICAST)
     if (r->iface && ipa_zero(r->via))
       debug("dev %s\n", r->iface->name);
@@ -488,11 +505,48 @@ static_dump(struct proto *P)
 
 #define IGP_TABLE(cf, sym) ((cf)->igp_table_##sym ? (cf)->igp_table_##sym ->table : NULL )
 
-static inline int
-static_cmp_rte(const void *X, const void *Y)
+static inline int srt_equal(const struct static_route *a, const struct static_route *b)
+{ return net_equal(a->net, b->net) && (a->index == b->index); }
+
+static inline int srt_compare(const struct static_route *a, const struct static_route *b)
+{ return net_compare(a->net, b->net) ?: uint_cmp(a->index, b->index); }
+
+static inline int srt_compare_qsort(const void *A, const void *B)
 {
-  struct static_route *x = *(void **)X, *y = *(void **)Y;
-  return net_compare(x->net, y->net);
+  return srt_compare(*(const struct static_route * const *)A,
+		     *(const struct static_route * const *)B);
+}
+
+static void
+static_index_routes(struct static_config *cf)
+{
+  struct static_route *rt, **buf;
+  uint num, i, v;
+
+  num = list_length(&cf->routes);
+  buf = xmalloc(num * sizeof(void *));
+
+  /* Initialize with sequential indexes to ensure stable sorting */
+  i = 0;
+  WALK_LIST(rt, cf->routes)
+  {
+    buf[i] = rt;
+    rt->index = i++;
+  }
+
+  qsort(buf, num, sizeof(struct static_route *), srt_compare_qsort);
+
+  /* Compute proper indexes - sequential for routes with same network */
+  for (i = 0, v = 0, rt = NULL; i < num; i++, v++)
+  {
+    if (rt && !net_equal(buf[i]->net, rt->net))
+      v = 0;
+
+    rt = buf[i];
+    rt->index = v;
+  }
+
+  xfree(buf);
 }
 
 static int
@@ -521,7 +575,7 @@ static_reconfigure(struct proto *P, struct proto_config *CF)
 
   /* Reconfigure initial matching sequence */
   for (or = HEAD(o->routes), nr = HEAD(n->routes);
-       NODE_VALID(or) && NODE_VALID(nr) && net_equal(or->net, nr->net);
+       NODE_VALID(or) && NODE_VALID(nr) && srt_equal(or, nr);
        or = NODE_NEXT(or), nr = NODE_NEXT(nr))
     static_reconfigure_rte(p, or, nr);
 
@@ -547,12 +601,12 @@ static_reconfigure(struct proto *P, struct proto_config *CF)
   for (i = 0, nr2 = nr; i < nrnum; i++, nr2 = NODE_NEXT(nr2))
     nrbuf[i] = nr2;
 
-  qsort(orbuf, ornum, sizeof(struct static_route *), static_cmp_rte);
-  qsort(nrbuf, nrnum, sizeof(struct static_route *), static_cmp_rte);
+  qsort(orbuf, ornum, sizeof(struct static_route *), srt_compare_qsort);
+  qsort(nrbuf, nrnum, sizeof(struct static_route *), srt_compare_qsort);
 
   while ((orpos < ornum) && (nrpos < nrnum))
   {
-    int x = net_compare(orbuf[orpos]->net, nrbuf[nrpos]->net);
+    int x = srt_compare(orbuf[orpos], nrbuf[nrpos]);
     if (x < 0)
       static_remove_rte(p, orbuf[orpos++]);
     else if (x > 0)
@@ -591,6 +645,7 @@ static_copy_config(struct proto_config *dest, struct proto_config *src)
     {
       dnh = cfg_alloc(sizeof(struct static_route));
       memcpy(dnh, snh, sizeof(struct static_route));
+      memset(&dnh->n, 0, sizeof(node));
 
       if (!drt)
 	add_tail(&d->routes, &(dnh->n));
@@ -602,6 +657,16 @@ static_copy_config(struct proto_config *dest, struct proto_config *src)
 	dnh->mp_head = drt;
     }
   }
+}
+
+static void
+static_get_route_info(rte *rte, struct rte_storage *er UNUSED, byte *buf)
+{
+  eattr *a = ea_find(rte->attrs->eattrs, EA_GEN_IGP_METRIC);
+  if (a)
+    buf += bsprintf(buf, " (%d/%u)", rte->attrs->pref, a->u.data);
+  else
+    buf += bsprintf(buf, " (%d)", rte->attrs->pref);
 }
 
 static void
@@ -667,5 +732,6 @@ struct protocol proto_static = {
   .shutdown =		static_shutdown,
   .cleanup =		static_cleanup,
   .reconfigure =	static_reconfigure,
-  .copy_config =	static_copy_config
+  .copy_config =	static_copy_config,
+  .get_route_info =	static_get_route_info,
 };

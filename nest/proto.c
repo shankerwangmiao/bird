@@ -27,7 +27,8 @@ list  proto_list;
 static list protocol_list;
 struct protocol *class_to_protocol[PROTOCOL__MAX];
 
-#define PD(pr, msg, args...) do { if (pr->debug & D_STATES) { log(L_TRACE "%s: " msg, pr->name , ## args); } } while(0)
+#define CD(c, msg, args...) ({ if (c->debug & D_STATES) log(L_TRACE "%s.%s: " msg, c->proto->name, c->name ?: "?", ## args); })
+#define PD(p, msg, args...) ({ if (p->debug & D_STATES) log(L_TRACE "%s: " msg, p->name, ## args); })
 
 static timer *proto_shutdown_timer;
 static timer *gr_wait_timer;
@@ -42,6 +43,7 @@ static u32 graceful_restart_locks;
 
 static char *p_states[] = { "DOWN", "START", "UP", "STOP" };
 static char *c_states[] = { "DOWN", "START", "UP", "FLUSHING" };
+static char *e_states[] = { "DOWN", "FEEDING", "READY" };
 
 extern struct protocol proto_unix_iface;
 
@@ -61,6 +63,15 @@ static inline int proto_is_done(struct proto *p)
 
 static inline int channel_is_active(struct channel *c)
 { return (c->channel_state == CS_START) || (c->channel_state == CS_UP); }
+
+static inline void
+channel_log_state_change(struct channel *c)
+{
+  if (c->export_state)
+    CD(c, "State changed to %s/%s", c_states[c->channel_state], e_states[c->export_state]);
+  else
+    CD(c, "State changed to %s", c_states[c->channel_state]);
+}
 
 static void
 proto_log_state_change(struct proto *p)
@@ -163,13 +174,13 @@ proto_add_channel(struct proto *p, struct channel_config *cf)
   c->net_type = cf->net_type;
   c->ra_mode = cf->ra_mode;
   c->preference = cf->preference;
+  c->debug = cf->debug;
   c->merge_limit = cf->merge_limit;
   c->in_keep_filtered = cf->in_keep_filtered;
 
   c->channel_state = CS_DOWN;
   c->export_state = ES_DOWN;
   c->last_state_change = current_time();
-  c->last_tx_filter_change = current_time();
   c->reloadable = 1;
 
   init_list(&c->net_feed);
@@ -178,17 +189,17 @@ proto_add_channel(struct proto *p, struct channel_config *cf)
 
   add_tail(&p->channels, &c->n);
 
-  PD(p, "Channel %s connected to table %s", c->name, c->table->name);
+  CD(c, "Connected to table %s", c->table->name);
 
   return c;
 }
 
 void
-proto_remove_channel(struct proto *p, struct channel *c)
+proto_remove_channel(struct proto *p UNUSED, struct channel *c)
 {
   ASSERT(c->channel_state == CS_DOWN);
 
-  PD(p, "Channel %s removed", c->name);
+  CD(c, "Removed", c->name);
 
   rem_node(&c->n);
   mb_free(c);
@@ -299,6 +310,7 @@ channel_feed_loop(void *ptr)
   {
     // DBG("Feeding protocol %s finished\n", p->name);
     c->export_state = ES_READY;
+    channel_log_state_change(c);
     if (c->table->total_updates > c->last_export)
       channel_run_exports(c);
 
@@ -592,7 +604,8 @@ channel_set_state(struct channel *c, uint state)
   default:
     ASSERT(0);
   }
-  // XXXX proto_log_state_change(c);
+
+  channel_log_state_change(c);
 }
 
 /**
@@ -609,6 +622,8 @@ void
 channel_request_feeding(struct channel *c, net_addr *n)
 {
   ASSERT(c->channel_state == CS_UP);
+
+  CD(c, "Feeding requested");
 
   /* Do nothing if we are still waiting for feeding */
   if (c->export_state == ES_DOWN)
@@ -636,7 +651,7 @@ channel_request_feeding(struct channel *c, net_addr *n)
   c->refeed_count = 0;
 
   channel_schedule_feed(c, 0);	/* Sets ES_FEEDING */
-  // proto_log_state_change(c);
+  channel_log_state_change(c);
 }
 
 static inline int
@@ -650,6 +665,8 @@ channel_request_reload(struct channel *c)
 {
   ASSERT(c->channel_state == CS_UP);
   ASSERT(channel_reloadable(c));
+
+  CD(c, "Reload requested");
 
   c->proto->reload_routes(c);
 
@@ -696,6 +713,7 @@ channel_config_new(const struct channel_class *cc, const char *name, uint net_ty
   cf->net_type = net_type;
   cf->ra_mode = RA_OPTIMAL;
   cf->preference = proto->protocol->preference;
+  cf->debug = new_config->channel_default_debug;
 
   add_tail(&proto->channels, &cf->n);
 
@@ -765,12 +783,10 @@ channel_reconfigure(struct channel *c, struct channel_config *cf)
   // c->ra_mode = cf->ra_mode;
   c->preference = cf->preference;
   c->merge_limit = cf->merge_limit;
+  c->debug = cf->debug;
   c->in_keep_filtered = cf->in_keep_filtered;
 
   channel_verify_limits(c);
-
-  if (export_changed)
-    c->last_tx_filter_change = current_time();
 
   /* Execute channel-specific reconfigure hook */
   if (c->channel->reconfigure && !c->channel->reconfigure(c, cf, &import_changed, &export_changed))
@@ -778,7 +794,7 @@ channel_reconfigure(struct channel *c, struct channel_config *cf)
 
   /* If the channel is not open, it has no routes and we cannot reload it anyways */
   if (c->channel_state != CS_UP)
-    return 1;
+    goto done;
 
   if (reconfigure_type == RECONFIG_SOFT)
   {
@@ -788,7 +804,7 @@ channel_reconfigure(struct channel *c, struct channel_config *cf)
     if (export_changed)
       log(L_INFO "Channel %s.%s changed export", c->proto->name, c->name);
 
-    return 1;
+    goto done;
   }
 
   /* Route reload may be not supported */
@@ -804,6 +820,8 @@ channel_reconfigure(struct channel *c, struct channel_config *cf)
   if (export_changed)
     channel_request_feeding(c, NULL);
 
+done:
+  CD(c, "Reconfigured");
   return 1;
 }
 
@@ -1963,6 +1981,16 @@ channel_show_info(struct channel *c)
 
   if (c->channel_state != CS_DOWN)
     channel_show_stats(c);
+}
+
+void
+channel_cmd_debug(struct channel *c, uint mask)
+{
+  if (cli_access_restricted())
+    return;
+
+  c->debug = mask;
+  cli_msg(0, "");
 }
 
 void

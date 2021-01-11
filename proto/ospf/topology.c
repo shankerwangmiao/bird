@@ -1455,6 +1455,9 @@ ospf_originate_link_lsa(struct ospf_proto *p, struct ospf_iface *ifa)
   prepare_link_lsa_body(p, ifa);
 
   ifa->link_lsa = ospf_originate_lsa(p, &lsa);
+
+  /* RFC 5340 4.4.3 Events 6+7 - new Link LSA is locally originated */
+  ospf_notify_net_lsa(ifa);
 }
 
 
@@ -2105,9 +2108,7 @@ ospf_hash_get(struct top_graph *f, u32 domain, u32 lsa, u32 rtr, u32 type)
   if (e)
     return e;
 
-  e = sl_alloc(f->hash_slab);
-  bzero(e, sizeof(struct top_hash_entry));
-
+  e = sl_allocz(f->hash_slab);
   e->color = OUTSPF;
   e->dist = LSINFINITY;
   e->lsa.type_raw = type;

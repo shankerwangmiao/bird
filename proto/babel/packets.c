@@ -1144,7 +1144,6 @@ babel_read_tlv(struct babel_tlv *hdr,
     return PARSE_ERROR;
 
   state->current_tlv_endpos = tlv_data[hdr->type].min_length;
-  memset(msg, 0, sizeof(*msg));
 
   int res = tlv_data[hdr->type].read_tlv(hdr, msg, state);
   if (res != PARSE_SUCCESS)
@@ -1270,7 +1269,7 @@ babel_send_unicast(union babel_msg *msg, struct babel_iface *ifa, ip_addr dest)
   struct babel_msg_node *msgn = sl_allocz(p->msg_slab);
   list queue;
 
-  msgn->msg = *msg;
+  *msgn = (struct babel_msg_node) { .msg = *msg };
   init_list(&queue);
   add_tail(&queue, NODE msgn);
   struct babel_pkt_header *buf = alloca(ifa->tx_length);
@@ -1294,7 +1293,8 @@ babel_enqueue(union babel_msg *msg, struct babel_iface *ifa)
 {
   struct babel_proto *p = ifa->proto;
   struct babel_msg_node *msgn = sl_allocz(p->msg_slab);
-  msgn->msg = *msg;
+
+  *msgn = (struct babel_msg_node) { .msg = *msg };
   add_tail(&ifa->msg_queue, NODE msgn);
   babel_kick_queue(ifa);
 }
