@@ -56,6 +56,8 @@ cf_file_read(byte *dest, uint max_len, int fd)
 void
 bt_bird_init(void)
 {
+  coro_init();
+
   if(bt_verbose)
     log_init_debug("");
   log_switch(bt_verbose != 0, NULL, NULL);
