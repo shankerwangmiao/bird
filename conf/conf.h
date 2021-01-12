@@ -104,13 +104,9 @@ int config_parse(struct conf_order *order);
  * Arguments:
  * @order provides callbacks to read command line
  *
- * Return value:
- * 1 on success
- * 0 on fail
- *
  * Parsed config is never kept, order->new_config should be zero after return.
  **/
-int cli_parse(struct conf_order *order);
+void cli_parse(struct conf_order *order);
 
 /** Callback for returning error from parser hooks */
 #define cf_error(...) cf_error_(ctx, __VA_ARGS__)

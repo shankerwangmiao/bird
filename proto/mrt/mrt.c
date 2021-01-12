@@ -709,15 +709,11 @@ mrt_dump_cmd(struct cf_context *ctx, struct mrt_dump_data *d)
 
   _Bool loop = 1;
   while (loop)
-  
-  CLI_TRY(this_cli) {
-    while (mrt_dump_cont(this_cli, s))
+    loop = mrt_dump_cont(this_cli, s);
 /*  Temporarily dropped the yielding. To be fixed soon.  */
-/*      coro_suspend()*/;
+/*      coro_suspend();*/
 
-  } CLI_EXCEPT(this_cli) {
-    mrt_dump_cleanup(s);
-  }
+  mrt_dump_cleanup(s);
 }
 
 

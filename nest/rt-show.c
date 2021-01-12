@@ -439,11 +439,7 @@ rt_show(struct rt_show_data *d)
 
   while (loop)
 /*    THE_BIRD_LOCKED(( rt_show_cleanup(d), loop = 0 )) */
-    {
-      CLI_TRY(this_cli) {
-	loop = rt_show_cont(d);
-      } CLI_EXCEPT(this_cli) {
-	rt_show_cleanup(d);
-      }
-    }
+    loop = rt_show_cont(d) && !this_cli->tx_closed;
+
+  rt_show_cleanup(d);
 }

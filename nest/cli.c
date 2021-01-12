@@ -95,6 +95,9 @@ cli_vprintf(cli *c, int code, const char *msg, va_list args)
   int errcode;
   int size, cnt;
 
+  if (c->tx_closed)
+    return;
+
   if (cd < 0)
     {
       cd = -cd;
@@ -126,7 +129,7 @@ cli_vprintf(cli *c, int code, const char *msg, va_list args)
   size += cnt;
   buf[size++] = '\n';
   if (sk_send(c->sock, buf, size) < 0)
-    longjmp(c->errbuf, 1);
+    c->tx_closed = 1;
 }
 
 #if CLI_LOG_HOOKS

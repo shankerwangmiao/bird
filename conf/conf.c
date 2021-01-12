@@ -145,7 +145,7 @@ cleanup:
   return ret;
 }
 
-int
+void
 cli_parse(struct conf_order *order)
 {
   DBG("Parsing command line\n");
@@ -161,20 +161,13 @@ cli_parse(struct conf_order *order)
 
   struct cf_context *ctx = cf_new_context(order);
 
-  int ok = 0;
-  if (setjmp(ctx->jmpbuf))
-    goto done;
-
   cfx_parse(ctx, ctx->yyscanner);
-  ok = 1;
 
-done:
   cf_free_context(ctx);
   config_free(&cc);
   config_del_obstacle(config);
   order->new_config = NULL;
   order->ctx = NULL;
-  return ok;
 }
 
 /**

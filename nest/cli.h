@@ -30,7 +30,7 @@ typedef struct cli {
   int restricted;			/* CLI is restricted to read-only commands */
   struct linpool *parser_pool;		/* Pool used during parsing */
   struct linpool *show_pool;		/* Pool used during route show */
-  jmp_buf errbuf;			/* Longjmp buffer for CLI write errors */
+  _Bool tx_closed;			/* Do not send any more messages */
 #if 0
   byte *ring_buf;			/* Ring buffer for asynchronous messages */
   byte *ring_end, *ring_read, *ring_write;	/* Pointers to the ring buffer */
@@ -39,9 +39,6 @@ typedef struct cli {
   uint log_threshold;			/* When free < log_threshold, store only important messages */
 #endif
 } cli;
-
-#define CLI_TRY(c) if (!setjmp((c)->errbuf)) {
-#define CLI_EXCEPT(c) memset(&(c)->errbuf, 0, sizeof(jmp_buf)); } else
 
 extern pool *cli_pool;
 extern _Thread_local struct cli *this_cli;		/* Used during parsing */
