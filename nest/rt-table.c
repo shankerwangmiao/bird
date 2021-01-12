@@ -2310,7 +2310,7 @@ rt_unlock_table(rtable *r)
 {
   if (!--r->use_count && r->deleted)
     {
-      ev_cancel(r->rt_event, 0);
+      ev_cancel(r->rt_event, 1);
       rfree(r->rt_event);
 
       struct config *conf = r->deleted;

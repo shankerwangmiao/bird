@@ -150,11 +150,14 @@ cli_parse(struct conf_order *order)
 {
   DBG("Parsing command line\n");
 
-  struct config cc = {};
-  cc.pool = rp_new(order->pool ?: &root_pool, "CLI Dummy Config");
-  cc.mem = order->lp ?: lp_new_default(cc.pool);
-  config_add_obstacle(config);
-  cc.cli_sym = &(config->sym_hash);
+  struct config cc = {}, *gc = config;
+  ASSERT_DIE(order->pool);
+  ASSERT_DIE(order->lp);
+  cc.pool = rp_new(order->pool, "CLI Dummy Config");
+  cc.mem = order->lp;
+
+  config_add_obstacle(gc);
+  cc.cli_sym = &(gc->sym_hash);
   init_list(&cc.symbols);
 
   order->new_config = &cc;
@@ -165,7 +168,7 @@ cli_parse(struct conf_order *order)
 
   cf_free_context(ctx);
   config_free(&cc);
-  config_del_obstacle(config);
+  config_del_obstacle(gc);
   order->new_config = NULL;
   order->ctx = NULL;
 }

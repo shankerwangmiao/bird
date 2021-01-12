@@ -482,6 +482,7 @@ void ev_schedule_locked(LOCKED(event_state), event *ev)
   if (evu->coro)
   {
     evu->coro->c.flags |= CORO_REPEAT;
+    evu->coro->c.flags &= ~CORO_STOP;
     EV_DEBUG(ev, "repeat");
     return;
   }
