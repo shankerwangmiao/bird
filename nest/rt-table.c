@@ -29,6 +29,7 @@
  */
 
 #undef LOCAL_DEBUG
+#define LOCAL_DEBUG
 
 #include "nest/bird.h"
 #include "nest/route.h"
@@ -75,10 +76,12 @@ static void rt_notify_hostcache(rtable *tab, net *net);
 static void rt_update_hostcache(rtable *tab);
 static void rt_next_hop_update(rtable *tab);
 static inline void rt_prune_table(rtable *tab);
+static void rt_prune_pending_exports(rtable *tab);
 
 struct tbf rl_pipe = TBF_DEFAULT_LOG_LIMITS;
 
-#define RT_OBS_BUF_SIZE	256
+/* This number must be big enough for so many imports to take more than 1 millisecond. */
+#define RT_OBS_BUF_SIZE	8196
 
 /* Like fib_route(), but skips empty net entries */
 static inline void *
@@ -414,11 +417,11 @@ rte_trace(struct channel *c, rte *e, int dir, char *msg)
 {
   log(L_TRACE "%s.%s %c %s %N %s",
       c->proto->name, c->name ?: "?", dir, msg, e->net,
-      rta_dest_name(e->attrs->dest));
+      e->attrs ? rta_dest_name(e->attrs->dest) : "withdrawal");
 #ifdef TRACE_TO_DEBUG
   debug("%s.%s %c %s %N %s",
       c->proto->name, c->name ?: "?", dir, msg, e->net,
-      rta_dest_name(e->attrs->dest));
+      e->attrs ? rta_dest_name(e->attrs->dest) : "withdrawal");
 #endif
 }
 
@@ -929,6 +932,8 @@ static void rte_export_event(void *data)
   {
     if (c->last_export >= c->table->total_updates)
     {
+      ASSERT_DIE(c->last_export == c->table->total_updates);
+
       rt_schedule_prune(c->table);
       loop = 0;
       continue;
@@ -1051,9 +1056,33 @@ rte_announce(rtable *tab, net *net, struct rte_storage *new, struct rte_storage 
       rt_notify_hostcache(tab, net);
   }
 
+  /* Full queue. Switch the slow exporters to refeed. */
   if (tab->total_updates - tab->cleared_updates >= RT_OBS_BUF_SIZE)
-    bug("Too many updates pending, not implemented yet");
+  {
+    struct channel *c;
+    node *n;
+    WALK_LIST2(c, n, tab->channels, table_node)
+      while (c->channel_state == CS_UP &&
+	  c->export_state == ES_READY &&
+	  c->last_export <= tab->cleared_updates)
+      {
+	ASSERT_DIE(c->last_export == tab->cleared_updates);
+	log(L_INFO "Channel %s.%s too slow exporting routes, switching to feed mode",
+	    c->proto->name, c->name);
 
+	if (c->export_event)
+	  ev_cancel(c->export_event, 0);
+
+	c->export_state = ES_FEEDING;
+	c->refeeding = 0;
+	ev_schedule(c->feed_event);
+      }
+
+    rt_prune_pending_exports(tab);
+  }
+
+  ASSERT_DIE(tab->total_updates - tab->cleared_updates < RT_OBS_BUF_SIZE);
+	
   /* Check invariant */
   ASSERT(!old || !(old->flags & REF_OBSOLETE));
 
@@ -1748,40 +1777,11 @@ rt_init(void)
   init_list(&routing_tables);
 }
 
-
-/**
- * rt_prune_table - prune a routing table
- *
- * The prune loop scans routing tables and removes routes belonging to flushing
- * protocols, discarded routes and also stale network entries. It is called from
- * rt_event(). The event is rescheduled if the current iteration do not finish
- * the table. The pruning is directed by the prune state (@prune_state),
- * specifying whether the prune cycle is scheduled or running, and there
- * is also a persistent pruning iterator (@prune_fit).
- *
- * The prune loop is used also for channel flushing. For this purpose, the
- * channels to flush are marked before the iteration and notified after the
- * iteration.
- */
 static void
-rt_prune_table(rtable *tab)
+rt_prune_pending_exports(rtable *tab)
 {
-  struct fib_iterator *fit = &tab->prune_fit;
-  int limit = 128;
-
-  struct channel *c;
-  node *n, *x;
-
-  DBG("Pruning route table %s\n", tab->name);
-#ifdef DEBUGGING
-  fib_check(&tab->fib);
-#endif
-
-  if (tab->prune_state == 0)
-    return;
-
-  if (tab->prune_state == 1)
-  {
+    struct channel *c;
+    struct node *n;
     u64 last_export = tab->total_updates;
     WALK_LIST2(c, n, tab->channels, table_node)
     {
@@ -1820,6 +1820,43 @@ rt_prune_table(rtable *tab)
     }
 
     tab->cleared_updates = last_export;
+}
+
+
+/**
+ * rt_prune_table - prune a routing table
+ *
+ * The prune loop scans routing tables and removes routes belonging to flushing
+ * protocols, discarded routes and also stale network entries. It is called from
+ * rt_event(). The event is rescheduled if the current iteration do not finish
+ * the table. The pruning is directed by the prune state (@prune_state),
+ * specifying whether the prune cycle is scheduled or running, and there
+ * is also a persistent pruning iterator (@prune_fit).
+ *
+ * The prune loop is used also for channel flushing. For this purpose, the
+ * channels to flush are marked before the iteration and notified after the
+ * iteration.
+ */
+static void
+rt_prune_table(rtable *tab)
+{
+  struct fib_iterator *fit = &tab->prune_fit;
+  int limit = 128;
+
+  struct channel *c;
+  node *n, *x;
+
+  DBG("Pruning route table %s\n", tab->name);
+#ifdef DEBUGGING
+  fib_check(&tab->fib);
+#endif
+
+  if (tab->prune_state == 0)
+    return;
+
+  if (tab->prune_state == 1)
+  {
+    rt_prune_pending_exports(tab);
 
     FIB_ITERATE_INIT(fit, &tab->fib);
     tab->prune_state = 2;
@@ -2157,9 +2194,6 @@ rt_next_hop_update_net(rtable *tab, net *n)
   /* Keep the old best pointer for now */
   struct rte_storage *old_best = n->routes;
 
-  /* One time for all the routes */
-  btime now = current_time();
-
   /* Replace all the routes */
   for (uint i=0; i<count; i++)
   {
@@ -2168,7 +2202,7 @@ rt_next_hop_update_net(rtable *tab, net *n)
     hmap_set(&tab->id_map, updates[i].new->id);
 
     /* Set the lastmod */
-    updates[i].new->lastmod = now;
+    updates[i].new->lastmod = current_time();
 
     if (i && (updates[i].before_old == &(updates[i-1].old->next)))
     {
@@ -2413,7 +2447,7 @@ rt_feed_channel_net_internal(struct channel *c, net *nn, btime from, btime to)
     uint i = 0;
     struct rte_storage *new_best = VALID_OR_NULL(nn->routes);
     for (struct rte_storage *r = nn->routes; r; r = r->next)
-      if (rte_is_valid(r))
+      if (rte_is_valid(r) && (r->lastmod >= from) && (r->lastmod < to))
 	u[i++] = (struct rte_update) { .new_best = new_best, .new = r };
 
     rte_export(c, u, cnt);
@@ -2443,13 +2477,14 @@ rt_feed_channel_prepare(struct channel *c)
   struct fib_iterator *fit = &c->feed_fit;
 
   ASSERT(c->export_state == ES_FEEDING);
-  ASSERT(!c->refeed_lastmod_max);
+  ASSERT(c->feed_done_lastmod == c->feed_seen_lastmod);
 
-/*restart:*/
   FIB_ITERATE_INIT(fit, &c->table->fib);
 
   c->last_export = c->table->total_updates;
-  c->refeed_lastmod_max = current_time();
+  c->feed_seen_lastmod = current_time();
+
+  ASSERT(c->feed_seen_lastmod > c->feed_done_lastmod);
 }
 
 /**
@@ -2464,11 +2499,12 @@ rt_feed_channel_prepare(struct channel *c)
 _Bool
 rt_feed_channel(struct channel *c)
 {
+  DBG("channel %s.%s: feeder loop from table %s\n", c->proto->name, c->name, c->table->name);
   struct fib_iterator *fit = &c->feed_fit;
   int max_feed = 256;
 
   ASSERT(c->export_state == ES_FEEDING);
-  ASSERT(c->refeed_lastmod_max);
+  ASSERT(c->feed_done_lastmod < c->feed_seen_lastmod);
 
   FIB_ITERATE_START(&c->table->fib, fit, net, n)
     {
@@ -2478,27 +2514,27 @@ rt_feed_channel(struct channel *c)
 	  return 1;
 	}
 
-      max_feed -= rt_feed_channel_net_internal(c, n, c->refeed_lastmod_min, c->refeed_lastmod_max);
+      max_feed -= rt_feed_channel_net_internal(c, n, c->feed_done_lastmod, c->feed_seen_lastmod);
     }
   FIB_ITERATE_END;
 
-  if (c->table->total_updates - c->last_export > RT_OBS_BUF_SIZE)
+  c->feed_done_lastmod = c->feed_seen_lastmod;
+
+  if (c->table->total_updates - c->last_export > RT_OBS_BUF_SIZE/2)
   {
-    c->refeed_lastmod_min = c->refeed_lastmod_max;
-    c->refeed_lastmod_max = 0;
+    DBG("channel %s.%s: feeder loop from table %s finished but too many exports remaining, feeding the rest (%lu)\n", c->proto->name, c->name, c->table->name, c->table->total_updates - c->last_export);
     rt_feed_channel_prepare(c);
     return 1;
   }
 
   /* Cleanup */
-  c->refeed_lastmod_max = 0;
   c->feed_active = 0;
 
   return 0;
 }
 
 /**
- * rt_feed_baby_abort - abort protocol feeding
+ * rt_feed_channel_abort - abort protocol feeding
  * @c: channel
  *
  * This function is called by the protocol code when the protocol stops or
@@ -2509,6 +2545,8 @@ rt_feed_channel_abort(struct channel *c)
 {
   if (c->feed_active)
     {
+      ev_cancel(c->feed_event, 0);
+
       /* Unlink the iterator */
       fit_get(&c->table->fib, &c->feed_fit);
       c->feed_active = 0;

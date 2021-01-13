@@ -403,7 +403,6 @@ struct rt_show_data_rtable {
 struct rt_show_data {
   net_addr *addr;
   list tables;
-  struct cf_context *ctx;		/* Parent parser context */
   struct rt_show_data_rtable *tab;	/* Iterator over table list */
   struct rt_show_data_rtable *last_table; /* Last table in output */
   struct fib_iterator fit;		/* Iterator over networks in table */
@@ -421,10 +420,8 @@ struct rt_show_data {
   int net_counter_last, rt_counter_last, show_counter_last;
 };
 
-struct cf_context;
-
-void rt_show(struct rt_show_data *);
-struct rt_show_data_rtable * rt_show_add_table(struct rt_show_data *d, rtable *t);
+void rt_show(linpool *lp, struct rt_show_data *);
+struct rt_show_data_rtable * rt_show_add_table(linpool *lp, struct rt_show_data *d, rtable *t);
 
 /* Value of table definition mode in struct rt_show_data */
 #define RSD_TDB_DEFAULT	  0		/* no table specified */

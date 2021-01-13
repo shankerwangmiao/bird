@@ -358,6 +358,8 @@ cli_connect(sock *s, byte *buf UNUSED, uint size UNUSED)
   rmove(s, c->pool);
   sk_set_rbsize(s, 1024);
 
+  s->flags |= SKF_NOLOCK;
+
   cli_hello(c);
 
   sk_schedule_rx(s);

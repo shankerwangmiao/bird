@@ -137,6 +137,7 @@ extern DOMAIN(the_bird) the_bird_domain;
 #define the_bird_unlock()	do_unlock(the_bird_domain.the_bird, &locking_stack.the_bird)
 
 #define THE_BIRD_LOCKED(cleanup)  LOCKED_DO(the_bird, the_bird_domain, cleanup)
+#define THE_BIRD_LOCKED_NOFAIL	  LOCKED_DO_NOFAIL(the_bird, the_bird_domain)
 
 #define assert_bird_lock() ASSERT_DIE(SUPER_LOCK(the_bird).the_bird == the_bird_domain.the_bird)
 

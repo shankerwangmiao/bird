@@ -696,24 +696,32 @@ mrt_dump_cmd(struct cf_context *ctx, struct mrt_dump_data *d)
   if (!d->filename)
     cf_error("File not specified");
 
-  struct mrt_table_dump_state *s = mrt_table_dump_init(this_cli->pool);
+  _Bool loop;
+  struct mrt_table_dump_state *s;
 
-  s->cli = this_cli;
-  s->table_expr = d->table_expr;
-  s->table_ptr = d->table_ptr;
-  s->filter = d->filter;
-  s->filename = d->filename;
+  THE_BIRD_LOCKED_NOFAIL
+  {
+    s = mrt_table_dump_init(this_cli->pool);
 
-  if (s->table_ptr)
-    rt_lock_table(s->table_ptr);
+    s->cli = this_cli;
+    s->table_expr = d->table_expr;
+    s->table_ptr = d->table_ptr;
+    s->filter = d->filter;
+    s->filename = d->filename;
 
-  _Bool loop = 1;
-  while (loop)
+    if (s->table_ptr)
+      rt_lock_table(s->table_ptr);
+
+
     loop = mrt_dump_cont(this_cli, s);
-/*  Temporarily dropped the yielding. To be fixed soon.  */
-/*      coro_suspend();*/
+  }
 
-  mrt_dump_cleanup(s);
+  while (loop)
+    THE_BIRD_LOCKED_NOFAIL
+    {
+      if (!(loop = mrt_dump_cont(this_cli, s)))
+	mrt_dump_cleanup(s);
+    }
 }
 
 

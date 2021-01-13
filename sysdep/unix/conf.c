@@ -317,7 +317,8 @@ async_config(void)
   struct config *conf = unix_read_config(config_name, unix_cf_error_log);
 
   if (conf)
-    config_commit(conf, RECONFIG_HARD, 0);
+    THE_BIRD_LOCKED_NOFAIL
+      config_commit(conf, RECONFIG_HARD, 0);
 }
 
 static void
@@ -344,7 +345,8 @@ cmd_check_config(const char *name)
     return;
 
   cli_msg(20, "Configuration OK");
-  config_free(conf);
+  THE_BIRD_LOCKED_NOFAIL
+    config_free(conf);
 }
 
 static void
@@ -386,15 +388,18 @@ cmd_reconfig(const char *name, int type, uint timeout)
   if (!conf)
     return;
 
-  int r = config_commit(conf, type, timeout);
+  THE_BIRD_LOCKED_NOFAIL
+  {
+    int r = config_commit(conf, type, timeout);
 
-  if ((r >= 0) && (timeout > 0))
-    {
-      cmd_reconfig_stored_cli = this_cli;
-      cli_msg(-22, "Undo scheduled in %d s", timeout);
-    }
+    if ((r >= 0) && (timeout > 0))
+      {
+	cmd_reconfig_stored_cli = this_cli;
+	cli_msg(-22, "Undo scheduled in %d s", timeout);
+      }
 
-  cmd_reconfig_msg(r);
+    cmd_reconfig_msg(r);
+  }
 }
 
 void
@@ -403,8 +408,8 @@ cmd_reconfig_confirm(void)
   if (cli_access_restricted())
     return;
 
-  int r = config_confirm();
-  cmd_reconfig_msg(r);
+  THE_BIRD_LOCKED_NOFAIL
+    cmd_reconfig_msg(config_confirm());
 }
 
 void
@@ -413,10 +418,11 @@ cmd_reconfig_undo(void)
   if (cli_access_restricted())
     return;
 
-  cli_msg(-21, "Undo requested");
-
-  int r = config_undo();
-  cmd_reconfig_msg(r);
+  THE_BIRD_LOCKED_NOFAIL
+  {
+    cli_msg(-21, "Undo requested");
+    cmd_reconfig_msg(config_undo());
+  }
 }
 
 void

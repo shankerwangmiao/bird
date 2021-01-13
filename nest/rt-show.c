@@ -284,22 +284,20 @@ rt_show_cont(struct rt_show_data *d)
     cli_printf(c, 0, "");
 
 done:
-  rt_show_cleanup(d);
   return 0;
 }
 
 struct rt_show_data_rtable *
-rt_show_add_table(struct rt_show_data *d, rtable *t)
+rt_show_add_table(linpool *lp, struct rt_show_data *d, rtable *t)
 {
-  struct cf_context *ctx = d->ctx;
-  struct rt_show_data_rtable *tab = cfg_allocz(sizeof(struct rt_show_data_rtable));
+  struct rt_show_data_rtable *tab = lp_allocz(lp, sizeof(struct rt_show_data_rtable));
   tab->table = t;
   add_tail(&(d->tables), &(tab->n));
   return tab;
 }
 
 static inline void
-rt_show_get_default_tables(struct rt_show_data *d)
+rt_show_get_default_tables(linpool *lp, struct rt_show_data *d)
 {
   struct channel *c;
   struct rt_show_data_rtable *tab;
@@ -307,7 +305,7 @@ rt_show_get_default_tables(struct rt_show_data *d)
   if (d->export_channel)
   {
     c = d->export_channel;
-    tab = rt_show_add_table(d, c->table);
+    tab = rt_show_add_table(lp, d, c->table);
     tab->export_channel = c;
     return;
   }
@@ -319,7 +317,7 @@ rt_show_get_default_tables(struct rt_show_data *d)
       if (c->export_state == ES_DOWN)
 	continue;
 
-      tab = rt_show_add_table(d, c->table);
+      tab = rt_show_add_table(lp, d, c->table);
       tab->export_channel = c;
     }
     return;
@@ -328,25 +326,23 @@ rt_show_get_default_tables(struct rt_show_data *d)
   if (d->show_protocol)
   {
     WALK_LIST(c, d->show_protocol->channels)
-      rt_show_add_table(d, c->table);
+      rt_show_add_table(lp, d, c->table);
     return;
   }
 
   for (int i=1; i<NET_MAX; i++)
     if (config->def_tables[i])
-      rt_show_add_table(d, config->def_tables[i]->table);
+      rt_show_add_table(lp, d, config->def_tables[i]->table);
 }
 
-static inline void
-rt_show_prepare_tables(struct rt_show_data *d)
+static inline _Bool
+rt_show_prepare_tables(linpool *lp, struct rt_show_data *d)
 {
-  struct cf_context *ctx = d->ctx;
-
   struct rt_show_data_rtable *tab, *tabx;
 
   /* Add implicit tables if no table is specified */
   if (EMPTY_LIST(d->tables))
-    rt_show_get_default_tables(d);
+    rt_show_get_default_tables(lp, d);
 
   WALK_LIST_DELSAFE(tab, tabx, d->tables)
   {
@@ -363,7 +359,10 @@ rt_show_prepare_tables(struct rt_show_data *d)
       if (!tab->export_channel)
       {
 	if (d->tables_defined_by & RSD_TDB_NMN)
-	  cf_error("No export channel for table %s", tab->table->name);
+	{
+	  cli_msg(8001, "No export channel for table %s", tab->table->name);
+	  return 0;
+	}
 
 	rem_node(&(tab->n));
 	continue;
@@ -374,7 +373,10 @@ rt_show_prepare_tables(struct rt_show_data *d)
     if (d->addr && (tab->table->addr_type != d->addr->type))
     {
       if (d->tables_defined_by & RSD_TDB_NMN)
-	cf_error("Incompatible type of prefix/ip for table %s", tab->table->name);
+      {
+	cli_msg(8001, "Incompatible type of prefix/ip for table %s", tab->table->name);
+	return 0;
+      }
 
       rem_node(&(tab->n));
       continue;
@@ -383,26 +385,25 @@ rt_show_prepare_tables(struct rt_show_data *d)
 
   /* Ensure there is at least one table */
   if (EMPTY_LIST(d->tables))
-    cf_error("No valid tables");
+  {
+    cli_msg(8001, "No valid tables");
+    return 0;
+  }
+  
+  return 1;
 }
 
 void
-rt_show(struct rt_show_data *d)
+rt_show(struct linpool *lp, struct rt_show_data *d)
 {
-  struct cf_context *ctx = d->ctx;
   struct rt_show_data_rtable *tab;
 
   _Bool loop = 0;
 
-/*  Temporarily dropped the yielding. To be fixed soon.  */
-/*  THE_BIRD_LOCKED({ return; })  */
+  THE_BIRD_LOCKED_NOFAIL
   {
-    /* Filtered routes are neither exported nor have sensible ordering */
-    if (d->filtered && (d->export_mode || d->primary_only))
-      cf_error("Incompatible show route options");
-
-    rt_show_prepare_tables(d);
-
+    if (rt_show_prepare_tables(lp, d))
+    {
     if (!d->addr)
     {
       WALK_LIST(tab, d->tables)
@@ -435,11 +436,13 @@ rt_show(struct rt_show_data *d)
       else
 	cli_msg(8001, "Network not found");
     }
+    }
   }
 
   while (loop)
-/*    THE_BIRD_LOCKED(( rt_show_cleanup(d), loop = 0 )) */
-    loop = rt_show_cont(d) && !this_cli->tx_closed;
+    THE_BIRD_LOCKED_NOFAIL
+      loop = rt_show_cont(d) && !this_cli->tx_closed;
 
-  rt_show_cleanup(d);
+  THE_BIRD_LOCKED_NOFAIL
+    rt_show_cleanup(d);
 }

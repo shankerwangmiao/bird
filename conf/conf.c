@@ -44,6 +44,7 @@
 #include <stdarg.h>
 
 #undef LOCAL_DEBUG
+#define LOCAL_DEBUG
 
 #include "nest/bird.h"
 #include "nest/route.h"
@@ -110,7 +111,8 @@ config_parse(struct conf_order *order)
   DBG("Parsing configuration named `%s'\n", order->state->name);
 
   if (!order->new_config)
-    order->new_config = config_alloc(order->pool, order->lp);
+    THE_BIRD_LOCKED_NOFAIL
+      order->new_config = config_alloc(order->pool, order->lp);
 
   struct cf_context *ctx = cf_new_context(order);
   int ret;
@@ -150,25 +152,35 @@ cli_parse(struct conf_order *order)
 {
   DBG("Parsing command line\n");
 
-  struct config cc = {}, *gc = config;
+  struct config cc = {}, *gc;
   ASSERT_DIE(order->pool);
   ASSERT_DIE(order->lp);
+
   cc.pool = rp_new(order->pool, "CLI Dummy Config");
   cc.mem = order->lp;
+  THE_BIRD_LOCKED_NOFAIL
+  {
+    config_add_obstacle(gc = config);
+    cc.cli_sym = &(config->sym_hash);
+  }
 
-  config_add_obstacle(gc);
-  cc.cli_sym = &(gc->sym_hash);
   init_list(&cc.symbols);
 
   order->new_config = &cc;
 
   struct cf_context *ctx = cf_new_context(order);
 
-  cfx_parse(ctx, ctx->yyscanner);
+  /* We don't need to handle the parse errors in any specific ways,
+   * we just do nothing in that case but we have to set the return point. */
+  if (!setjmp(ctx->jmpbuf))
+    cfx_parse(ctx, ctx->yyscanner);
 
   cf_free_context(ctx);
   config_free(&cc);
-  config_del_obstacle(gc);
+
+  THE_BIRD_LOCKED_NOFAIL
+    config_del_obstacle(gc);
+
   order->new_config = NULL;
   order->ctx = NULL;
 }

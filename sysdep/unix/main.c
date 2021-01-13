@@ -194,8 +194,11 @@ cmd_shutdown(void)
   if (cli_access_restricted())
     return;
 
-  cli_msg(7, "Shutdown requested");
-  order_shutdown(0);
+  THE_BIRD_LOCKED_NOFAIL
+  {
+    cli_msg(7, "Shutdown requested");
+    order_shutdown(0);
+  }
 }
 
 void
@@ -220,8 +223,11 @@ cmd_graceful_restart(void)
   if (cli_access_restricted())
     return;
 
-  cli_msg(25, "Graceful restart requested");
-  order_shutdown(1);
+  THE_BIRD_LOCKED_NOFAIL
+  {
+    cli_msg(25, "Graceful restart requested");
+    order_shutdown(1);
+  }
 }
 
 
@@ -476,8 +482,6 @@ main(int argc, char **argv)
 {
   coro_init();
 
-  ASSERT_DIE(the_bird_lock());
-
 #ifdef HAVE_LIBDMALLOC
   if (!getenv("DMALLOC_OPTIONS"))
     dmalloc_debug(0x2f03d00);
@@ -545,34 +549,35 @@ main(int argc, char **argv)
 
   signal_init();
 
-  config_commit(conf, RECONFIG_HARD, 0);
+  THE_BIRD_LOCKED_NOFAIL
+  {
+    config_commit(conf, RECONFIG_HARD, 0);
 
-  graceful_restart_init();
+    graceful_restart_init();
 
 #ifdef LOCAL_DEBUG
-  async_dump_flag = 1;
+    async_dump_flag = 1;
 #endif
 
-  log(L_INFO "Started");
-  DBG("Entering I/O loop.\n");
-
-  the_bird_unlock();
+    log(L_INFO "Started");
+    DBG("Entering I/O loop.\n");
+  }
 
   while (1)
   {
-    LOCKED_DO_NOFAIL(the_bird, the_bird_domain)
-    {
-      if (atomic_exchange_explicit(&async_config_flag, 0, memory_order_acquire))
-	async_config();
+    if (atomic_exchange_explicit(&async_config_flag, 0, memory_order_acquire))
+      async_config();
 
-      if (atomic_exchange_explicit(&async_dump_flag, 0, memory_order_acquire))
+    if (atomic_exchange_explicit(&async_dump_flag, 0, memory_order_acquire))
+      THE_BIRD_LOCKED_NOFAIL
 	async_dump();
 
-      if (atomic_exchange_explicit(&async_shutdown_flag, 0, memory_order_acquire))
+    if (atomic_exchange_explicit(&async_shutdown_flag, 0, memory_order_acquire))
+      THE_BIRD_LOCKED_NOFAIL
 	async_shutdown();
 
+    THE_BIRD_LOCKED_NOFAIL
       timers_fire(&main_timeloop);
-    }
 
     timers_wait(&main_timeloop);
   }

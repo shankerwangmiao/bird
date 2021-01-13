@@ -132,7 +132,7 @@ CF_CLI(CONFIGURE UNDO,,, [[Undo last configuration change]])
 { cmd_reconfig_undo(); } ;
 
 CF_CLI(CONFIGURE STATUS,,, [[Show configuration status]])
-{ cmd_reconfig_status(); } ;
+{ THE_BIRD_LOCKED_NOFAIL cmd_reconfig_status(); } ;
 
 CF_CLI(CONFIGURE CHECK, cfg_name, [\"<file>\"], [[Parse configuration and check its validity]])
 { cmd_check_config($3); } ;

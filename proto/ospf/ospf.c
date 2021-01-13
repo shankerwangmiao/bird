@@ -1190,21 +1190,13 @@ show_lsa_prefix(struct top_hash_entry *he, struct top_hash_entry *cnode, int af)
   }
 }
 
-void
-ospf_sh_state(struct proto *P, int verbose, int reachable)
+static void
+ospf_show_state(struct ospf_proto *p, int verbose, int reachable)
 {
-  struct ospf_proto *p = (struct ospf_proto *) P;
   int ospf2 = ospf_is_v2(p);
   int af = ospf_get_af(p);
   uint i, ix, j1, jx;
   u32 last_area = 0xFFFFFFFF;
-
-  if (p->p.proto_state != PS_UP)
-  {
-    cli_msg(-1016, "%s: is not up", p->p.name);
-    cli_msg(0, "");
-    return;
-  }
 
   /* We store interesting area-scoped LSAs in array hea and
      global-scoped (LSA_T_EXT) LSAs in array hex */
@@ -1386,6 +1378,22 @@ ospf_sh_state(struct proto *P, int verbose, int reachable)
   }
 
   cli_msg(0, "");
+}
+
+void
+ospf_sh_state(struct proto *P, int verbose, int reachable)
+{
+  THE_BIRD_LOCKED_NOFAIL
+  {
+    if (P->proto_state == PS_UP)
+      ospf_show_state((struct ospf_proto *) P, verbose, reachable);
+    else if (P)
+    {
+      cli_msg(-1016, "%s: is not up", P->name);
+      cli_msg(0, "");
+      return;
+    }
+  }
 }
 
 

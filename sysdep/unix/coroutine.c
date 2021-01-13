@@ -258,6 +258,8 @@ ev_dump(event *e)
 
 static void coro_free(LOCKED(event_state), struct coroutine *c)
 {
+  DBG("coro_free(%p)\n", c);
+
   rem_node(&UNLOCKED_STRUCT(event_state, c)->n);
   rfree(c->lp_local);
 
@@ -281,6 +283,8 @@ static void coro_free(LOCKED(event_state), struct coroutine *c)
 static void
 coro_sync_stop(LOCKED(event_state), struct coroutine *coro)
 {
+  DBG("coro_sync_stop(%p)\n", coro);
+
   atomic_store_explicit(&coro->cancelled, 1, memory_order_release);
 
   switch (coro->flags & CORO_KIND_MASK) 
@@ -325,6 +329,8 @@ static void coro_finish(LOCKED(event_state))
 {
   ASSERT_DIE(pthread_equal(coro_local->coro.id, pthread_self()));
 
+  DBG("coro_finish(%p)\n", coro_local);
+
   pthread_detach(coro_local->coro.id);
   coro_free(CURRENT_LOCK, &coro_local->coro);
 }
@@ -335,13 +341,14 @@ ev_cancel(event *e, _Bool allow_self)
   _Bool out = EV_CANCEL_NONE;
   EVENT_LOCKED_NOFAIL
   {
-    if (e == ev_local)
-    {
-      ASSERT_DIE(allow_self);
-      EV_DEBUG(e, "cancel from self");
-    }
-    else if (ev_local)
-      EV_DEBUG(e, "cancel from %p", ev_local);
+    if (ev_local)
+      if (e == ev_local)
+      {
+	ASSERT_DIE(allow_self);
+	EV_DEBUG(e, "cancel from self");
+      }
+      else
+	EV_DEBUG(e, "cancel from %p", ev_local);
     else if (sk_local)
       EV_DEBUG(e, "cancel from %p", sk_local);
     else
@@ -693,6 +700,9 @@ static void *sk_entry(void *data)
     {
       SK_DEBUG(sk_local, "got error revents: %x", pfd[1].revents);
       sk_err_revents = pfd[1].revents;
+      if (tx)
+	EVENT_LOCKED ({ return coro_local; })
+	  UNLOCKED_STRUCT(event_state, sk_local)->tx_coro = NULL;
       break;
     }
 
@@ -721,8 +731,6 @@ static void *sk_entry(void *data)
 
     if (SKL_RX)
       su->rx_coro = NULL;
-    else if (SKL_TX)
-      su->tx_coro = NULL;
 
     coro_finish(CURRENT_LOCK);
   }

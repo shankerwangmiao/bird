@@ -1666,6 +1666,7 @@ sk_write_or_store(sock *s, struct sk_buf *buf)
   _Bool store = 0;
   struct sk_buf *nb = NULL;
 
+  /* These buffers are to be flushed */
   list flush_bufs;
   init_list(&flush_bufs);
 
@@ -1673,18 +1674,14 @@ sk_write_or_store(sock *s, struct sk_buf *buf)
   {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
-    /* There may be two different active writers.
-     * 1) a TX coroutine which checks the chain for next buffers before ending
-     * 2) a direct writer which writes and ends with no such check
-     * We must distinguish between these two later, anyway for now we want
-     * to store the buffer and then maybe schedule TX.
-     */
-    if (su->tx_coro && !sk_write_from_tx_hook(CURRENT_LOCK, s) || su->tx_active)
+    /* We want to always store if there is something pending on the socket,
+     * either some data or even a concurrent writer. */
+    if (!EMPTY_LIST(su->tx_chain) || su->tx_active)
       store = 1;
     else
-      /* The socket is completely free, locking it */
       su->tx_active = 1;
 
+    /* Move used buffers to flush routine */
     if (!EMPTY_LIST(su->used_tx_bufs))
     {
       add_tail_list(&flush_bufs, &su->used_tx_bufs);
@@ -1710,11 +1707,17 @@ sk_write_or_store(sock *s, struct sk_buf *buf)
       AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
       /* The socket is still occupied by somebody else, queuing */
-      if (su->tx_coro && !sk_write_from_tx_hook(CURRENT_LOCK, s) || su->tx_active)
+      if (!EMPTY_LIST(su->tx_chain) || su->tx_active)
+      {
 	add_tail(&su->tx_chain, &UNLOCKED_STRUCT(event_state, nb)->n);
+
+	/* Start the async writer if needed */
+	if (!su->tx_coro)
+	  sk_schedule_tx_locked(CURRENT_LOCK, s);
+      }
       else
       {
-	/* The socket has been freed inbetween, we fall back to direct write */
+	/* The socket has been completely freed inbetween, we fall back to direct write */
 	store = 0;
 	su->tx_active = 1;
       }
@@ -1728,52 +1731,45 @@ sk_write_or_store(sock *s, struct sk_buf *buf)
   /* Now we want to write the buffer. */
   int e = sk_maybe_write(s, buf, 1);
 
+  if (e == 0)
+  {
+    /* In case of partial write, we have to store the buffer unless already stored */
+    if (nb)
+      nb->begin = buf->begin;
+    else
+      nb = sk_buf_store(s, buf);
+
+    EVENT_LOCKED_NOFAIL {
+      AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
+
+      /* This is the first packet to continue writing with */
+      add_head(&su->tx_chain, &UNLOCKED_STRUCT(event_state, nb)->n);
+
+      /* Passing the chain to the asynchronous writer thread */
+      if (!su->tx_coro)
+	sk_schedule_tx_locked(CURRENT_LOCK, s);
+
+      /* And releasing the socket for async writing */
+      su->tx_active = 0;
+    }
+
+    return 0;
+  }
+
   /* If we have written whole the packet, we are now done */
   if (e == 1)
   {
     if (s->type == SK_TCP || s->type == SK_UNIX)
       ASSERT_DIE(buf->begin == buf->len);
-
-    goto done;
   }
 
-  /* If an error has occured, we are done at all */
-  if (e < 0)
-    goto done;
+  /* If an error has occured, we are done at all, nothing special to do */
 
-  /* In case of partial write, we have to store the buffer unless already stored */
-  if (nb)
-    nb->begin = buf->begin;
-  else
-    nb = sk_buf_store(s, buf);
-
-  EVENT_LOCKED_NOFAIL {
-    AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
-
-    /* This is the first packet to continue writing with */
-    add_head(&su->tx_chain, &UNLOCKED_STRUCT(event_state, nb)->n);
-
-    /* Passing the chain to the asynchronous writer thread */
-    if (!su->tx_coro)
-      sk_schedule_tx_locked(CURRENT_LOCK, s);
-    else
-      ASSERT_DIE(sk_write_from_tx_hook(CURRENT_LOCK, s));
-
-    su->tx_active = 0;
-  }
-
-  return 0;
-
-done:
   EVENT_LOCKED_NOFAIL {
     AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
 
     /* We are leaving the socket free */
     su->tx_active = 0;
-
-    /* Wait, what if somebody has been blocked on us? */
-    if (!EMPTY_LIST(su->tx_chain))
-      sk_schedule_tx_locked(CURRENT_LOCK, s);
   }
 
   /* If the buf has been allocated, it is no longer needed */
@@ -2005,6 +2001,7 @@ sk_write(sock *s)
       if (connect(s->fd, &sa.sa, SA_LEN(sa)) >= 0 || errno == EISCONN)
       {
 	sk_tcp_connected(s);
+	EVENT_LOCKED ({ return 0; }) UNLOCKED_STRUCT(event_state, s)->tx_coro = NULL;
 	THE_BIRD_LOCKED_CALL(s, ret = CALL_TX_HOOK(s));
       }
       else if (errno != EINTR && errno != EAGAIN && errno != EINPROGRESS)
@@ -2020,6 +2017,7 @@ sk_write(sock *s)
       {
 	case SSH_OK:
 	  s->type = SK_SSH;
+	  EVENT_LOCKED ({ return 0; }) UNLOCKED_STRUCT(event_state, s)->tx_coro = NULL;
 	  THE_BIRD_LOCKED_CALL(s, ret = CALL_TX_HOOK(s));
 	  return ret;
 
@@ -2038,14 +2036,23 @@ sk_write(sock *s)
     {
       while (1) {
 	struct sk_buf *buf = NULL;
+	_Bool tx_active = 0;
 	EVENT_LOCKED ({ return 0; }) {
 	  AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
-	  ASSERT_DIE(su->tx_active == 0);
 
-	  if (!EMPTY_LIST(su->tx_chain))
-	    /* The buffer to write */
+	  /* There is still some active writer, don't mess with them. */
+	  if (su->tx_active)
+	    tx_active = 1;
+
+	  /* The buffer to write, if there is any. */
+	  else if (!EMPTY_LIST(su->tx_chain))
 	    buf = HEAD(su->tx_chain);
 	}
+
+	/* Return here after a loop through poll, hoping that the active writer
+	 * is fast enough to finish until now. */
+	if (tx_active)
+	  return 1;
 
 	if (!buf)
 	  break;
@@ -2075,8 +2082,13 @@ sk_write(sock *s)
       THE_BIRD_LOCKED_CALL(s, ret = CALL_TX_HOOK_IF_EXISTS(s));
       if (!ret)
 	EVENT_LOCKED ({ return 0; })
-	  if (!EMPTY_LIST(UNLOCKED_STRUCT(event_state, s)->tx_chain))
+	{
+	  AUTO_TYPE su = UNLOCKED_STRUCT(event_state, s);
+	  if (EMPTY_LIST(su->tx_chain))
+	    su->tx_coro = NULL;
+	  else
 	    ret = 1;
+	}
 
       return ret;
     }

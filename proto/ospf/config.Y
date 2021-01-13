@@ -526,18 +526,30 @@ CF_CLI(SHOW OSPF INTERFACE, optproto opttext, [<name>] [\"<interface>\"], [[Show
 CF_CLI_HELP(SHOW OSPF TOPOLOGY, [all] [<name>], [[Show information about OSPF network topology]])
 
 CF_CLI(SHOW OSPF TOPOLOGY, optproto opttext, [<name>], [[Show information about reachable OSPF network topology]])
-{ ospf_sh_state(proto_get_named(ctx, $4, &proto_ospf), 0, 1); };
+{
+  struct proto *p = proto_get_named(ctx, $4, &proto_ospf);
+  THE_BIRD_LOCKED_NOFAIL ospf_sh_state(p, 0, 1);
+};
 
 CF_CLI(SHOW OSPF TOPOLOGY ALL, optproto opttext, [<name>], [[Show information about all OSPF network topology]])
-{ ospf_sh_state(proto_get_named(ctx, $5, &proto_ospf), 0, 0); };
+{
+  struct proto *p = proto_get_named(ctx, $5, &proto_ospf);
+  THE_BIRD_LOCKED_NOFAIL ospf_sh_state(p, 0, 0);
+};
 
 CF_CLI_HELP(SHOW OSPF STATE, [all] [<name>], [[Show information about OSPF network state]])
 
 CF_CLI(SHOW OSPF STATE, optproto opttext, [<name>], [[Show information about reachable OSPF network state]])
-{ ospf_sh_state(proto_get_named(ctx, $4, &proto_ospf), 1, 1); };
+{
+  struct proto *p = proto_get_named(ctx, $4, &proto_ospf);
+  THE_BIRD_LOCKED_NOFAIL ospf_sh_state(p, 1, 1);
+};
 
 CF_CLI(SHOW OSPF STATE ALL, optproto opttext, [<name>], [[Show information about all OSPF network state]])
-{ ospf_sh_state(proto_get_named(ctx, $5, &proto_ospf), 1, 0); };
+{
+  struct proto *p = proto_get_named(ctx, $5, &proto_ospf);
+  THE_BIRD_LOCKED_NOFAIL ospf_sh_state(p, 1, 0);
+};
 
 CF_CLI_HELP(SHOW OSPF LSADB, ..., [[Show content of OSPF LSA database]]);
 CF_CLI(SHOW OSPF LSADB, lsadb_args, [global | area <id> | link] [type <num>] [lsid <id>] [self | router <id>] [<proto>], [[Show content of OSPF LSA database]])
@@ -545,7 +557,8 @@ CF_CLI(SHOW OSPF LSADB, lsadb_args, [global | area <id> | link] [type <num>] [ls
   if (!$4->proto)
     $4->proto = (struct ospf_proto *) proto_get_named(ctx, NULL, &proto_ospf);
 
-  ospf_sh_lsadb($4);
+  THE_BIRD_LOCKED_NOFAIL
+    ospf_sh_lsadb($4);
 };
 
 lsadb_args:

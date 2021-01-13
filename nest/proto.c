@@ -7,6 +7,7 @@
  */
 
 #undef LOCAL_DEBUG
+#define LOCAL_DEBUG
 
 #include "nest/bird.h"
 #include "nest/protocol.h"
@@ -251,9 +252,22 @@ channel_schedule_feed(struct channel *c, int initial)
   c->export_state = ES_FEEDING;
   c->refeeding = !initial;
 
-  c->refeed_lastmod_min = c->refeed_lastmod_max = 0;
+  c->feed_done_lastmod = c->feed_seen_lastmod = 0;
 
   ev_schedule(c->feed_event);
+}
+
+static void
+channel_feed_finished(struct channel *c, _Bool partial)
+{
+  c->export_state = ES_READY;
+  channel_log_state_change(c);
+
+  if (!partial && c->proto->feed_end)
+    c->proto->feed_end(c);
+
+  if (c->table->total_updates > c->last_export)
+    channel_run_exports(c);
 }
 
 static void
@@ -262,6 +276,10 @@ channel_feed_loop(void *ptr)
   struct channel *c = ptr;
   _Bool loop = 1;
   _Bool wait = 1;
+  _Bool partial = 0;
+
+  /* There is only one case when this event may be cancelled
+   * and it is when the channel is going down. */
 
   /* The protocol has not yet started fully, wait for the proto_event to complete */
   while (loop && wait)
@@ -277,48 +295,59 @@ channel_feed_loop(void *ptr)
   THE_BIRD_LOCKED({ return; })
   {
     ASSERT(!c->feed_active);
-    if (c->proto->feed_begin)
+
+    if (c->feed_done_lastmod > 0)
+      partial = 1;
+
+    if (!partial && c->proto->feed_begin)
       c->proto->feed_begin(c, !c->refeeding);
 
-    rt_feed_channel_prepare(c);
+    DBG("Channel %s.%s feed loop init: last_export=%lu, total_updates=%lu\n",
+	c->proto->name, c->name, c->last_export, c->table->total_updates);
+
+    /* Jump over empty partial feed */
+    if (partial && (c->last_export == c->table->total_updates))
+    {
+      loop = 0;
+      channel_feed_finished(c, partial);
+    }
+    else
+      rt_feed_channel_prepare(c);
+
+    DBG("Channel %s.%s feed loop init: partial=%d, loop=%d\n", c->proto->name, c->name, partial, loop);
   }
 
-  while (loop)
-    THE_BIRD_LOCKED({ return; })
-      loop = rt_feed_channel(c);
-
-  /* Reset export limit if the feed ended with acceptable number of exported routes */
-  struct channel_limit *l = &c->out_limit;
-  THE_BIRD_LOCKED({ return; })
-    if (loop = c->refeeding &&
-	(l->state == PLS_BLOCKED) &&
-	(c->refeed_count <= l->limit) &&
-	(c->stats.exp_routes <= l->limit))
-    {
-      log(L_INFO "Protocol %s resets route export limit (%u)", c->proto->name, l->limit);
-      channel_reset_limit(&c->out_limit);
-
-      /* Continue in feed - it will process routing table again from beginning */
-      c->refeed_count = 0;
-      rt_feed_channel_prepare(c);
-    }
+  _Bool repeated_feed = 0;
 
   while (loop)
-    THE_BIRD_LOCKED({ return; })
-      loop = rt_feed_channel(c);
-
-  THE_BIRD_LOCKED({ return; })
   {
-    // DBG("Feeding protocol %s finished\n", p->name);
-    c->export_state = ES_READY;
-    channel_log_state_change(c);
-    if (c->table->total_updates > c->last_export)
-      channel_run_exports(c);
+    THE_BIRD_LOCKED({ return; })
+    {
+      struct channel_limit *l = &c->out_limit;
+      /* Feed is finished? */
+      if (!(loop = rt_feed_channel(c)))
+      {
+	/* Reset export limit if the feed ended with acceptable number of exported routes */
+	if (!repeated_feed &&
+	    (loop = c->refeeding &&
+	    (l->state == PLS_BLOCKED) &&
+	    (c->refeed_count <= l->limit) &&
+	    (c->stats.exp_routes <= l->limit)))
+	{
+	  log(L_INFO "Protocol %s resets route export limit (%u)", c->proto->name, l->limit);
+	  channel_reset_limit(&c->out_limit);
 
-    // proto_log_state_change(p);
-
-    if (c->proto->feed_end)
-      c->proto->feed_end(c);
+	  /* Continue in feed - it will process routing table again from beginning */
+	  repeated_feed = 1;
+	  c->refeed_count = 0;
+	  c->feed_done_lastmod = c->feed_seen_lastmod = 0;
+	  rt_feed_channel_prepare(c);
+	}
+	/* Otherwise we're really finished */
+	else
+	  channel_feed_finished(c, partial);
+      }
+    }
   }
 }
 
@@ -2183,10 +2212,11 @@ proto_apply_cmd(struct proto_spec ps, void (* cmd)(struct proto *, uintptr_t, in
   if (restricted && cli_access_restricted())
     return;
 
-  if (ps.patt)
-    proto_apply_cmd_patt(ps.ptr, cmd, arg);
-  else
-    proto_apply_cmd_symbol(ps.ptr, cmd, arg);
+  THE_BIRD_LOCKED_NOFAIL
+    if (ps.patt)
+      proto_apply_cmd_patt(ps.ptr, cmd, arg);
+    else
+      proto_apply_cmd_symbol(ps.ptr, cmd, arg);
 }
 
 struct proto *
@@ -2206,15 +2236,23 @@ proto_get_named(struct cf_context *ctx, struct symbol *sym, struct protocol *pr)
   else
   {
     p = NULL;
-    WALK_LIST(q, proto_list)
+    _Bool multiple = 1;
+
+    THE_BIRD_LOCKED_NOFAIL WALK_LIST(q, proto_list)
       if ((q->proto == pr) && (q->proto_state != PS_DOWN))
       {
 	if (p)
-	  cf_error("There are multiple %s protocols running", pr->name);
+	{
+	  multiple = 1;
+	  break;
+	}
 	p = q;
       }
+
     if (!p)
       cf_error("There is no %s protocol running", pr->name);
+    else if (multiple)
+      cf_error("There are multiple %s protocols running", pr->name);
   }
 
   return p;

@@ -290,7 +290,7 @@ void proto_apply_cmd(struct proto_spec ps, void (* cmd)(struct proto *, uintptr_
 struct proto *proto_get_named(struct cf_context *ctx, struct symbol *, struct protocol *);
 struct proto *proto_iterate_named(struct cf_context *ctx, struct symbol *sym, struct protocol *proto, struct proto *old);
 
-#define PROTO_WALK_CMD(sym,pr,p) for(struct proto *p = NULL; p = proto_iterate_named(ctx, sym, pr, p); )
+#define PROTO_WALK_CMD(sym,pr,p) THE_BIRD_LOCKED_NOFAIL for(struct proto *p = NULL; p = proto_iterate_named(ctx, sym, pr, p); )
 
 
 #define CMD_RELOAD	0
@@ -543,8 +543,8 @@ struct channel {
   u8 gr_wait;				/* Route export to channel is postponed until graceful restart */
 
   btime last_state_change;		/* Time of last state transition */
-  btime refeed_lastmod_min;		/* Oldest lastmod for range refeed, incl. */
-  btime refeed_lastmod_max;		/* Newest lastmod for range refeed, excl. */
+  btime feed_done_lastmod;		/* Lastmod time of last completely exported route */
+  btime feed_seen_lastmod;		/* Lastmod time of last route accepted for range refeed */
 
   struct rtable *in_table;		/* Internal table for received routes */
   struct event *reload_event;		/* Event responsible for reloading from in_table */

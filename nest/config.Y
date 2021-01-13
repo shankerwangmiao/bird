@@ -560,13 +560,13 @@ bfd_opts:
 CF_CLI_HELP(SHOW, ..., [[Show status information]])
 
 CF_CLI(SHOW STATUS,,, [[Show router status]])
-{ cmd_show_status(); } ;
+{ THE_BIRD_LOCKED_NOFAIL cmd_show_status(); } ;
 
 CF_CLI(SHOW MEMORY,,, [[Show memory usage]])
-{ cmd_show_memory(); } ;
+{ THE_BIRD_LOCKED_NOFAIL cmd_show_memory(); } ;
 
 CF_CLI(SHOW THREADS,,, [[Show thread information]])
-{ cmd_show_threads(); } ;
+{ THE_BIRD_LOCKED_NOFAIL cmd_show_threads(); } ;
 
 CF_CLI(SHOW PROTOCOLS, proto_patt2, [<protocol> | \"<pattern>\"], [[Show routing protocols]])
 { proto_apply_cmd($3, proto_cmd_show, 0, 0); } ;
@@ -580,21 +580,26 @@ optproto:
  ;
 
 CF_CLI(SHOW INTERFACES,,, [[Show network interfaces]])
-{ if_show(); } ;
+{ THE_BIRD_LOCKED_NOFAIL if_show(); } ;
 
 CF_CLI(SHOW INTERFACES SUMMARY,,, [[Show summary of network interfaces]])
-{ if_show_summary(); } ;
+{ THE_BIRD_LOCKED_NOFAIL if_show_summary(); } ;
 
 CF_CLI_HELP(SHOW ROUTE, ..., [[Show routing table]])
 CF_CLI(SHOW ROUTE, r_args, [[[<prefix>|for <prefix>|for <ip>] [table <t>] [filter <f>|where <cond>] [all] [primary] [filtered] [(export|preexport|noexport) <p>] [protocol <p>] [stats|count]]], [[Show routing table]])
-{ rt_show($3); } ;
+{
+  /* Filtered routes are neither exported nor have sensible ordering */
+  if ($3->filtered && ($3->export_mode || $3->primary_only))
+    cf_error("Incompatible show route options");
+
+  rt_show(ctx->cfg_mem, $3);
+};
 
 r_args:
    /* empty */ {
      $$ = cfg_allocz(sizeof(struct rt_show_data));
      init_list(&($$->tables));
      $$->filter = FILTER_ACCEPT;
-     $$->ctx = ctx;
    }
  | r_args net_any {
      $$ = $1;
@@ -610,7 +615,7 @@ r_args:
  | r_args TABLE CF_SYM_KNOWN {
      cf_assert_symbol(ctx, $3, SYM_TABLE);
      $$ = $1;
-     rt_show_add_table($$, $3->table->table);
+     rt_show_add_table(ctx->cfg_mem, $$, $3->table->table);
      $$->tables_defined_by = RSD_TDB_DIRECT;
    }
  | r_args TABLE ALL {
@@ -622,17 +627,17 @@ r_args:
        cf_error("All tables have been already released as we're shutting down");
      }
      WALK_LIST(t, config->tables)
-       rt_show_add_table($$, t->table);
+       rt_show_add_table(ctx->cfg_mem, $$, t->table);
      $$->tables_defined_by = RSD_TDB_ALL;
    }
  | r_args IMPORT TABLE channel_arg {
      if (!$4->in_table) cf_error("No import table in channel %s.%s", $4->proto->name, $4->name);
-     rt_show_add_table($$, $4->in_table);
+     rt_show_add_table(ctx->cfg_mem, $$, $4->in_table);
      $$->tables_defined_by = RSD_TDB_DIRECT;
    }
  | r_args EXPORT TABLE channel_arg {
      if (!$4->out_table) cf_error("No export table in channel %s.%s", $4->proto->name, $4->name);
-     rt_show_add_table($$, $4->out_table);
+     rt_show_add_table(ctx->cfg_mem, $$, $4->out_table);
      $$->tables_defined_by = RSD_TDB_DIRECT;
    }
  | r_args FILTER filter {
@@ -775,7 +780,7 @@ channel_arg:
 
 CF_CLI_HELP(SHOW SYMBOLS, ..., [[Show all known symbolic names]])
 CF_CLI(SHOW SYMBOLS, sym_args, [table|filter|function|protocol|template|<symbol>], [[Show all known symbolic names]])
-{ cmd_show_symbols($3); } ;
+{ THE_BIRD_LOCKED_NOFAIL cmd_show_symbols($3); } ;
 
 sym_args:
    /* empty */ {
@@ -792,26 +797,26 @@ sym_args:
 
 CF_CLI_HELP(DUMP, ..., [[Dump debugging information]])
 CF_CLI(DUMP RESOURCES,,, [[Dump all allocated resource]])
-{ rdump(&root_pool); cli_msg(0, ""); } ;
+{ THE_BIRD_LOCKED_NOFAIL rdump(&root_pool); cli_msg(0, ""); } ;
 /*
 CF_CLI(DUMP EVENTS,,, [[Dump event log]])
-{ io_log_dump(); cli_msg(0, ""); } ;
+{ THE_BIRD_LOCKED_NOFAIL io_log_dump(); cli_msg(0, ""); } ;
 */
 CF_CLI(DUMP INTERFACES,,, [[Dump interface information]])
-{ if_dump_all(); cli_msg(0, ""); } ;
+{ THE_BIRD_LOCKED_NOFAIL if_dump_all(); cli_msg(0, ""); } ;
 CF_CLI(DUMP NEIGHBORS,,, [[Dump neighbor cache]])
-{ neigh_dump_all(); cli_msg(0, ""); } ;
+{ THE_BIRD_LOCKED_NOFAIL neigh_dump_all(); cli_msg(0, ""); } ;
 CF_CLI(DUMP ATTRIBUTES,,, [[Dump attribute cache]])
-{ rta_dump_all(); cli_msg(0, ""); } ;
+{ THE_BIRD_LOCKED_NOFAIL rta_dump_all(); cli_msg(0, ""); } ;
 CF_CLI(DUMP ROUTES,,, [[Dump routing table]])
-{ rt_dump_all(); cli_msg(0, ""); } ;
+{ THE_BIRD_LOCKED_NOFAIL rt_dump_all(); cli_msg(0, ""); } ;
 CF_CLI(DUMP PROTOCOLS,,, [[Dump protocol information]])
-{ protos_dump_all(); cli_msg(0, ""); } ;
+{ THE_BIRD_LOCKED_NOFAIL protos_dump_all(); cli_msg(0, ""); } ;
 CF_CLI(DUMP FILTER ALL,,, [[Dump all filters in linearized form]])
-{ filters_dump_all(); cli_msg(0, ""); } ;
+{ THE_BIRD_LOCKED_NOFAIL filters_dump_all(); cli_msg(0, ""); } ;
 
 CF_CLI(EVAL, term, <expr>, [[Evaluate an expression]])
-{ cmd_eval(f_linearize(ctx, $2)); } ;
+{ THE_BIRD_LOCKED_NOFAIL cmd_eval(f_linearize(ctx, $2)); } ;
 
 CF_CLI_HELP(ECHO, ..., [[Control echoing of log messages]])
 
