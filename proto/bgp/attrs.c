@@ -1122,6 +1122,13 @@ bgp_attr_known(uint code)
   return (code < ARRAY_SIZE(bgp_attr_table)) && bgp_attr_table[code].name;
 }
 
+void bgp_fix_attr_flags(ea_list *attrs)
+{
+  for (u8 i = 0; i < attrs->count; i++)
+  {
+    attrs->attrs[i].flags = bgp_attr_table[EA_ID(attrs->attrs[i].id)].flags;
+  }
+}
 
 /*
  *	Attribute export
@@ -1862,7 +1869,6 @@ bgp_rt_notify(struct proto *P, struct channel *C, net *n, rte *new, rte *old)
 
   bgp_schedule_packet(p->conn, c, PKT_UPDATE);
 }
-
 
 static inline u32
 bgp_get_neighbor(rte *r)
