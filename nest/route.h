@@ -21,6 +21,7 @@ struct rte_src;
 struct symbol;
 struct timer;
 struct filter;
+struct f_trie;
 struct cli;
 
 /*
@@ -149,6 +150,7 @@ struct rtable_config {
   int gc_min_time;			/* Minimum time between two consecutive GC runs */
   byte sorted;				/* Routes of network are sorted according to rte_better() */
   byte internal;			/* Internal table of a protocol */
+  byte trie_used;			/* Rtable has attached trie */
   btime min_settle_time;		/* Minimum settle time for notifications */
   btime max_settle_time;		/* Maximum settle time for notifications */
 };
@@ -158,6 +160,7 @@ typedef struct rtable {
   node n;				/* Node in list of all tables */
   pool *rp;				/* Resource pool to allocate everything from, including itself */
   struct fib fib;
+  struct f_trie *trie;			/* Trie of prefixes defined in fib */
   char *name;				/* Name of this table */
   list channels;			/* List of attached channels (struct channel) */
   uint addr_type;			/* Type of address data stored in table (NET_*) */
@@ -323,8 +326,8 @@ static inline void rt_shutdown(rtable *r) { rfree(r->rp); }
 static inline net *net_find(rtable *tab, const net_addr *addr) { return (net *) fib_find(&tab->fib, addr); }
 static inline net *net_find_valid(rtable *tab, const net_addr *addr)
 { net *n = net_find(tab, addr); return (n && rte_is_valid(n->routes)) ? n : NULL; }
-static inline net *net_get(rtable *tab, const net_addr *addr) { return (net *) fib_get(&tab->fib, addr); }
-void *net_route(rtable *tab, const net_addr *n);
+net *net_get(rtable *tab, const net_addr *addr);
+net *net_route(rtable *tab, const net_addr *n);
 int net_roa_check(rtable *tab, const net_addr *n, u32 asn);
 rte *rte_find(net *net, struct rte_src *src);
 rte *rte_get_temp(struct rta *);
