@@ -102,6 +102,8 @@ void *sl_alloc(slab *);
 void *sl_allocz(slab *);
 void sl_free(slab *, void *);
 
+#define SLF_NULLFREE	0x80000000	/* OR this to slab size to allow sl_free(NULL, block); */
+
 /*
  * Low-level memory allocation functions, please don't use
  * outside resource manager and possibly sysdep code.
