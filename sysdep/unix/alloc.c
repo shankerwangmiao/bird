@@ -59,12 +59,12 @@ static struct free_pages global_free_pages = {
 uint *pages_kept = &global_free_pages.cnt;
 
 static void *
-alloc_sys_page(void)
+alloc_sys_page(unsigned long size)
 {
-  void *ptr = mmap(NULL, page_size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  void *ptr = mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
   if (ptr == MAP_FAILED)
-    bug("mmap(%lu) failed: %m", page_size);
+    bug("mmap(%lu) failed: %m", size);
 
   return ptr;
 }
@@ -103,7 +103,26 @@ alloc_page(void)
     return fp;
   }
 
-  return alloc_sys_page();
+  return alloc_sys_page(page_size);
+#endif
+}
+
+void *
+alloc_page_block(uint count)
+{
+  if (use_fake)
+  {
+    void *ptr = NULL;
+    int err = posix_memalign(&ptr, page_size, page_size * count);
+
+    if (err || !ptr)
+      bug("posix_memalign(%lu) failed", (long unsigned int) page_size * count);
+
+    return ptr;
+  }
+
+#ifdef HAVE_MMAP
+  return alloc_sys_page(page_size * count);
 #endif
 }
 
@@ -128,6 +147,22 @@ free_page(void *ptr)
 #endif
 }
 
+void
+free_page_block(void *ptr, uint count)
+{
+  if (use_fake)
+  {
+    free(ptr);
+    return;
+  }
+
+#ifdef HAVE_MMAP
+  for (uint i=0; i<count; i++, ptr += page_size)
+    free_page(ptr);
+#endif
+}
+
+
 #ifdef HAVE_MMAP
 static void
 global_free_pages_cleanup_event(void *data UNUSED)
@@ -139,7 +174,7 @@ global_free_pages_cleanup_event(void *data UNUSED)
 
   while (fps->cnt / 2 < fps->min)
   {
-    struct free_page *fp = alloc_sys_page();
+    struct free_page *fp = alloc_sys_page(page_size);
     fp->n = (node) {};
     add_tail(&fps->pages, &fp->n);
     fps->cnt++;

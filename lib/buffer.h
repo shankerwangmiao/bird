@@ -13,7 +13,7 @@
 #include "lib/resource.h"
 #include "sysdep/config.h"
 
-#define BUFFER_(type)		struct { type *data; uint used, size; }
+#define BUFFER_(type)		struct { pool *pool; type *data; uint used, size; }
 #define BUFFER_TYPE(v)		typeof(* (v).data)
 #define BUFFER_SIZE(v)		((v).size * sizeof(* (v).data))
 
@@ -21,18 +21,19 @@
 #define BUFFER(type) BUFFER_(type)
 #endif
 
-#define BUFFER_INIT(v,pool,isize)					\
+#define BUFFER_INIT(v,_pool,_size)					\
   ({									\
     (v).used = 0;							\
-    (v).size = (isize);							\
-    (v).data = mb_alloc(pool, BUFFER_SIZE(v));				\
+    (v).size = (_size);							\
+    (v).data = mb_alloc(_pool, BUFFER_SIZE(v));				\
+    (v).pool = _pool;							\
   })
 
 #define BUFFER_SET(v,nsize)						\
   ({									\
     (v).used = (nsize);							\
     if ((v).used > (v).size)						\
-      buffer_realloc((void **) &((v).data), &((v).size), (v).used, sizeof(* (v).data)); \
+      buffer_realloc((v).pool, (void **) &((v).data), &((v).size), (v).used, sizeof(* (v).data)); \
   })
 
 #define BUFFER_INC(v,step)						\
@@ -54,12 +55,5 @@
 
 #define BUFFER_WALK(v,n)						\
   for (BUFFER_TYPE(v) *_n = (v).data, n; _n < ((v).data + (v).used) && (n = *_n, 1); _n++)
-
-#define BUFFER_SHALLOW_COPY(dst, src)					\
-  ({									\
-    (dst).used = (src).used;						\
-    (dst).size = (src).size;						\
-    (dst).data = (src).data;						\
-  })
 
 #endif /* _BIRD_BUFFER_H_ */

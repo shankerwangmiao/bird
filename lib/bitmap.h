@@ -14,6 +14,7 @@ struct bmap
 {
   u32 size;
   u32 *data;
+  pool *pool;
 };
 
 void bmap_init(struct bmap *b, pool *p, uint size);
@@ -42,6 +43,7 @@ static inline void bmap_clear(struct bmap *b, uint n)
 
 struct hmap
 {
+  pool *pool;
   u32 size[4];
   u32 *data[4];
   u32 root[8];

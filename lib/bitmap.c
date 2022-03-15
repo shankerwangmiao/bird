@@ -24,6 +24,7 @@ bmap_init(struct bmap *b, pool *p, uint size)
 {
   b->size = BIRD_ALIGN(size, 4);
   b->data = mb_allocz(p, b->size);
+  b->pool = p;
 }
 
 void
@@ -42,7 +43,7 @@ bmap_grow(struct bmap *b, uint need)
 
   uint old_size = b->size;
   b->size = size;
-  b->data = mb_realloc(b->data, b->size);
+  b->data = mb_realloc(b->pool, b->data, b->size);
 
   ASSERT(size >= old_size);
   memset(b->data + (old_size / 4), 0, size - old_size);
@@ -79,6 +80,8 @@ hmap_init(struct hmap *b, pool *p, uint size)
   b->data[3] = b->root;
 
   memset(b->root, 0, sizeof(b->root));
+
+  b->pool = p;
 }
 
 static void
@@ -92,7 +95,7 @@ hmap_grow(struct hmap *b, uint need)
   {
     uint old_size = b->size[i];
     b->size[i] = size;
-    b->data[i] = mb_realloc(b->data[i], b->size[i]);
+    b->data[i] = mb_realloc(b->pool, b->data[i], b->size[i]);
 
     ASSERT(size >= old_size);
     memset(b->data[i] + (old_size / 4), 0, size - old_size);

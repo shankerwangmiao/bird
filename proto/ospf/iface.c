@@ -752,7 +752,7 @@ ospf_iface_update_flood_queue_size(struct ospf_iface *ifa)
     return;
 
   ifa->flood_queue_size = new_size;
-  ifa->flood_queue = mb_realloc(ifa->flood_queue, new_size * sizeof(void *));
+  ifa->flood_queue = mb_realloc(ifa->pool, ifa->flood_queue, new_size * sizeof(void *));
   bzero(ifa->flood_queue + old_size, (new_size - old_size) * sizeof(void *));
 }
 

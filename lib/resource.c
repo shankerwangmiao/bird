@@ -29,10 +29,19 @@
  * is freed upon shutdown of the module.
  */
 
+static const uint mb_slab_sizes[] = {
+  0x10, 0x30, 0x70, 0x150, 0x3f0,
+};
+
+#define MB_SLAB_SIZES	(sizeof(mb_slab_sizes) / sizeof(*mb_slab_sizes))
+
+static struct resclass mb_class;
+
 struct pool {
   resource r;
   list inside;
   const char *name;
+  slab *mb_slab[MB_SLAB_SIZES];
 };
 
 static void pool_dump(resource *);
@@ -94,7 +103,8 @@ pool_free(resource *P)
   while (rr = (resource *) r->n.next)
     {
       r->class->free(r);
-      xfree(r);
+      if (r->class != &mb_class)
+	xfree(r);
       r = rr;
     }
 }
@@ -184,9 +194,14 @@ rfree(void *res)
 
   if (r->n.next)
     rem_node(&r->n);
+
   r->class->free(r);
+
+  int do_free = (r->class != &mb_class);
   r->class = NULL;
-  xfree(r);
+
+  if (do_free)
+    xfree(r);
 }
 
 /**
@@ -306,19 +321,27 @@ resource_init(void)
  */
 
 struct mblock {
-  resource r;
+  slab *zero;	/* Slab head has a valid pointer in this position. */
+  resource r;	/* Beware, resource is not the first item */
   unsigned size;
+  unsigned pages;
   uintptr_t data_align[0];
   byte data[0];
 };
 
-static void mbl_free(resource *r UNUSED)
+#define MBLOCK_HEADER(m) ((struct mblock *) (((uintptr_t) m) & ~(page_size-1)))
+
+
+static void mbl_free(resource *r)
 {
+  struct mblock *m = SKIP_BACK(struct mblock, r, r);
+
+  free_page_block(m, m->pages);
 }
 
 static void mbl_debug(resource *r)
 {
-  struct mblock *m = (struct mblock *) r;
+  struct mblock *m = SKIP_BACK(struct mblock, r, r);
 
   debug("(size=%d)\n", m->size);
 }
@@ -326,7 +349,7 @@ static void mbl_debug(resource *r)
 static resource *
 mbl_lookup(resource *r, unsigned long a)
 {
-  struct mblock *m = (struct mblock *) r;
+  struct mblock *m = SKIP_BACK(struct mblock, r, r);
 
   if ((unsigned long) m->data <= a && (unsigned long) m->data + m->size > a)
     return r;
@@ -336,10 +359,10 @@ mbl_lookup(resource *r, unsigned long a)
 static struct resmem
 mbl_memsize(resource *r)
 {
-  struct mblock *m = (struct mblock *) r;
+  struct mblock *m = SKIP_BACK(struct mblock, r, r);
   return (struct resmem) {
     .effective = m->size,
-    .overhead = ALLOC_OVERHEAD + sizeof(struct mblock),
+    .overhead = m->pages * page_size - m->size,
   };
 }
 
@@ -368,12 +391,25 @@ static struct resclass mb_class = {
 void *
 mb_alloc(pool *p, unsigned size)
 {
-  struct mblock *b = xmalloc(sizeof(struct mblock) + size);
+  for (uint i = 0; i < MB_SLAB_SIZES; i++) {
+    if (size < mb_slab_sizes[i]) {
+      if (!p->mb_slab[i])
+	p->mb_slab[i] = sl_new(p, mb_slab_sizes[i] | SLF_NULLFREE);
 
-  b->r.class = &mb_class;
-  b->r.n = (node) {};
+      return sl_alloc(p->mb_slab[i]);
+    }
+  }
+
+  unsigned long alloc_pages = (size + sizeof(struct mblock) + page_size - 1) / page_size;
+
+  struct mblock *b = alloc_page_block(alloc_pages);
+  *b = (struct mblock) {
+    .r.class = &mb_class,
+    .size = size,
+    .pages = alloc_pages,
+  };
+
   add_tail(&p->inside, &b->r.n);
-  b->size = size;
   return b->data;
 }
 
@@ -414,14 +450,39 @@ mb_allocz(pool *p, unsigned size)
  * mb_free(), not rfree().
  */
 void *
-mb_realloc(void *m, unsigned size)
+mb_realloc(pool *p, void *m, unsigned size)
 {
-  struct mblock *b = SKIP_BACK(struct mblock, data, m);
+  struct mblock *b = MBLOCK_HEADER(m);
+  uint old_size = 0;
 
-  b = xrealloc(b, sizeof(struct mblock) + size);
-  update_node(&b->r.n);
-  b->size = size;
-  return b->data;
+  if (b->zero)
+  {
+    for (uint i = 0; i < MB_SLAB_SIZES; i++)
+      if (b->zero == p->mb_slab[i])
+      {
+	old_size = mb_slab_sizes[i];
+	break;
+      }
+    ASSERT_DIE(old_size);
+  }
+  else
+    old_size = b->size;
+
+  if (size < old_size)
+    return m;
+
+  void *nb = mb_alloc(p, size);
+  memcpy(nb, m, old_size);
+
+  if (b->zero)
+    sl_free(b->zero, m);
+  else
+  {
+    rem_node(&b->r.n);
+    free_page_block(b, b->pages);
+  }
+
+  return nb;
 }
 
 
@@ -437,8 +498,12 @@ mb_free(void *m)
   if (!m)
     return;
 
-  struct mblock *b = SKIP_BACK(struct mblock, data, m);
-  rfree(b);
+  struct mblock *b = MBLOCK_HEADER(m);
+
+  if (b->zero)
+    sl_free(b->zero, m);
+  else
+    rfree(&b->r);
 }
 
 
@@ -446,13 +511,13 @@ mb_free(void *m)
 #define STEP_UP(x) ((x) + (x)/2 + 4)
 
 void
-buffer_realloc(void **buf, unsigned *size, unsigned need, unsigned item_size)
+buffer_realloc(pool *p, void **buf, unsigned *size, unsigned need, unsigned item_size)
 {
   unsigned nsize = MIN(*size, need);
 
   while (nsize < need)
     nsize = STEP_UP(nsize);
 
-  *buf = mb_realloc(*buf, nsize * item_size);
+  *buf = mb_realloc(p, *buf, nsize * item_size);
   *size = nsize;
 }

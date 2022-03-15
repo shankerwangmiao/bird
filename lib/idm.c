@@ -18,6 +18,8 @@
 void
 idm_init(struct idm *m, pool *p, uint size)
 {
+  m->pool = p;
+
   m->pos = 0;
   m->used = 1;
   m->size = size;
@@ -42,7 +44,7 @@ idm_alloc(struct idm *m)
   if (m->used > (m->size * 28))
   {
     m->size *= 2;
-    m->data = mb_realloc(m->data, m->size * sizeof(u32));
+    m->data = mb_realloc(m->pool, m->data, m->size * sizeof(u32));
     memset(m->data + i, 0, (m->size - i) * sizeof(u32));
     goto found;
   }

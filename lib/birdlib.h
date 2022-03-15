@@ -128,6 +128,7 @@ typedef struct buffer {
   byte *start;
   byte *pos;
   byte *end;
+  struct pool *pool;
 } buffer;
 
 #define STACK_BUFFER_INIT(buf,size)		\

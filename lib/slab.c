@@ -369,7 +369,7 @@ sl_free(slab *s, void *oo)
 #ifdef POISON
 	memset(h, 0xde, page_size - s->init_phead);
 #endif
-	free_page(h);
+	free_page(head);
       }
       else
 	{
@@ -383,14 +383,28 @@ static void
 slab_free(resource *r)
 {
   slab *s = (slab *) r;
-  struct sl_head *h, *g;
 
-  WALK_LIST_DELSAFE(h, g, s->empty_heads)
-    free_page(h);
-  WALK_LIST_DELSAFE(h, g, s->partial_heads)
-    free_page(h);
-  WALK_LIST_DELSAFE(h, g, s->full_heads)
-    free_page(h);
+  if (s->init_phead)
+  {
+    node *nn, *nxt;
+    struct sl_phead *ph;
+    WALK_LIST2_DELSAFE(ph, nn, nxt, s->empty_heads, head.n)
+      free_page(ph);
+    WALK_LIST2_DELSAFE(ph, nn, nxt, s->partial_heads, head.n)
+      free_page(ph);
+    WALK_LIST2_DELSAFE(ph, nn, nxt, s->full_heads, head.n)
+      free_page(ph);
+  }
+  else
+  {
+    struct sl_head *h, *g;
+    WALK_LIST_DELSAFE(h, g, s->empty_heads)
+      free_page(h);
+    WALK_LIST_DELSAFE(h, g, s->partial_heads)
+      free_page(h);
+    WALK_LIST_DELSAFE(h, g, s->full_heads)
+      free_page(h);
+  }
 }
 
 static void

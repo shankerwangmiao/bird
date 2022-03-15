@@ -149,7 +149,7 @@ ca_lookup(pool *p, const char *name, int f_type)
 
     if (id >= ca_storage_max) {
       ca_storage_max *= 2;
-      ca_storage = mb_realloc(ca_storage, sizeof(struct ca_storage *) * ca_storage_max * 2);
+      ca_storage = mb_realloc(&root_pool, ca_storage, sizeof(struct ca_storage *) * ca_storage_max * 2);
     }
 
     cas = mb_allocz(&root_pool, sizeof(struct ca_storage) + strlen(name) + 1);

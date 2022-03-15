@@ -59,7 +59,7 @@ extern pool root_pool;
 
 void *mb_alloc(pool *, unsigned size);
 void *mb_allocz(pool *, unsigned size);
-void *mb_realloc(void *m, unsigned size);
+void *mb_realloc(pool *, void *m, unsigned size);
 void mb_free(void *);
 
 /* Memory pools with linear allocation */
@@ -109,12 +109,14 @@ void sl_free(slab *, void *);
  * outside resource manager and possibly sysdep code.
  */
 
-void buffer_realloc(void **buf, unsigned *size, unsigned need, unsigned item_size);
+void buffer_realloc(pool *p, void **buf, unsigned *size, unsigned need, unsigned item_size);
 
 /* Allocator of whole pages; for use in slabs and other high-level allocators. */
 extern long page_size;
 void *alloc_page(void);
+void *alloc_page_block(uint count);
 void free_page(void *);
+void free_page_block(void *, uint count);
 
 void resource_sys_init(void);
 

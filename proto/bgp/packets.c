@@ -185,7 +185,7 @@ bgp_find_af_caps(struct bgp_caps *caps, u32 afi)
 }
 
 static struct bgp_af_caps *
-bgp_get_af_caps(struct bgp_caps **pcaps, u32 afi)
+bgp_get_af_caps(struct bgp_proto *p, struct bgp_caps **pcaps, u32 afi)
 {
   struct bgp_caps *caps = *pcaps;
   struct bgp_af_caps *ac;
@@ -196,7 +196,7 @@ bgp_get_af_caps(struct bgp_caps **pcaps, u32 afi)
 
   uint n = caps->af_count;
   if (uint_is_pow2(n))
-    *pcaps = caps = mb_realloc(caps, sizeof(struct bgp_caps) +
+    *pcaps = caps = mb_realloc(p->p.pool, caps, sizeof(struct bgp_caps) +
 			       (2 * n) * sizeof(struct bgp_af_caps));
 
   ac = &caps->af_data[caps->af_count++];
@@ -478,7 +478,7 @@ bgp_read_capabilities(struct bgp_conn *conn, byte *pos, int len)
 	goto err;
 
       af = get_af4(pos+2);
-      ac = bgp_get_af_caps(&caps, af);
+      ac = bgp_get_af_caps(p, &caps, af);
       ac->ready = 1;
       break;
 
@@ -501,7 +501,7 @@ bgp_read_capabilities(struct bgp_conn *conn, byte *pos, int len)
 	  continue;
 
 	af = get_af4(pos+2+i);
-	ac = bgp_get_af_caps(&caps, af);
+	ac = bgp_get_af_caps(p, &caps, af);
 	ac->ext_next_hop = 1;
       }
       break;
@@ -531,7 +531,7 @@ bgp_read_capabilities(struct bgp_conn *conn, byte *pos, int len)
       for (i = 2; i < cl; i += 4)
       {
 	af = get_af3(pos+2+i);
-	ac = bgp_get_af_caps(&caps, af);
+	ac = bgp_get_af_caps(p, &caps, af);
 	ac->gr_able = 1;
 	ac->gr_af_flags = pos[2+i+3];
       }
@@ -563,7 +563,7 @@ bgp_read_capabilities(struct bgp_conn *conn, byte *pos, int len)
       for (i = 0; i < cl; i += 4)
       {
 	af = get_af3(pos+2+i);
-	ac = bgp_get_af_caps(&caps, af);
+	ac = bgp_get_af_caps(p, &caps, af);
 	ac->add_path = pos[2+i+3];
       }
       break;
@@ -592,7 +592,7 @@ bgp_read_capabilities(struct bgp_conn *conn, byte *pos, int len)
       for (i = 0; i < cl; i += 7)
       {
 	af = get_af3(pos+2+i);
-	ac = bgp_get_af_caps(&caps, af);
+	ac = bgp_get_af_caps(p, &caps, af);
 	ac->llgr_able = 1;
 	ac->llgr_flags = pos[2+i+3];
 	ac->llgr_time = get_u24(pos + 2+i+4);

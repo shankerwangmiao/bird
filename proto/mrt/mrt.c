@@ -73,6 +73,7 @@
 static void
 mrt_buffer_init(buffer *b, pool *pool, size_t n)
 {
+  b->pool = pool;
   b->start = mb_alloc(pool, n);
   b->pos = b->start;
   b->end = b->start + n;
@@ -88,7 +89,7 @@ mrt_buffer_grow(buffer *b, size_t n)
   while (size < req)
     size = size * 3 / 2;
 
-  b->start = mb_realloc(b->start, size);
+  b->start = mb_realloc(b->pool, b->start, size);
   b->pos = b->start + used;
   b->end = b->start + size;
 }
