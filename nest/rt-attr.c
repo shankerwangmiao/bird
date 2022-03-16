@@ -741,9 +741,28 @@ ea_same(ea_list *x, ea_list *y)
 	  a->type != b->type ||
 	  a->originated != b->originated ||
 	  a->fresh != b->fresh ||
-	  a->undef != b->undef ||
-	  ((a->type & EAF_EMBEDDED) ? a->u.data != b->u.data : !adata_same(a->u.ptr, b->u.ptr)))
+	  a->undef != b->undef)
 	return 0;
+
+      if (a->type & EAF_EMBEDDED)
+	{
+	  if (a->u.data != b->u.data)
+	    return 0;
+	}
+      else if (a->type & EAF_VAR_LENGTH)
+	{
+	  if (!adata_same(a->u.ptr, b->u.ptr))
+	    return 0;
+	}
+      else switch (a->type)
+	{
+	  case EAF_TYPE_IP_ADDRESS:
+	    if (ipa_compare(*a->u.ip, *b->u.ip))
+	      return 0;
+	    break;
+	  default:
+	    bug("Unknown eattr type in comparison");
+	}
     }
   return 1;
 }
@@ -762,8 +781,18 @@ ea_list_copy(ea_list *o)
   for(i=0; i<o->count; i++)
     {
       eattr *a = &o->attrs[i];
-      if (!(a->type & EAF_EMBEDDED))
+      if (a->type & EAF_EMBEDDED)
+	; /* Do nothing */
+      else if (a->type & EAF_VAR_LENGTH)
 	elen += sizeof(struct adata) + a->u.ptr->length;
+      else switch (a->type)
+	{
+	  case EAF_TYPE_IP_ADDRESS:
+	    elen += sizeof(ip_addr);
+	    break;
+	  default:
+	    bug("Unknown attribute type in copying");
+	}
     }
 
   n = mb_alloc(rta_pool, elen);
@@ -772,7 +801,9 @@ ea_list_copy(ea_list *o)
   for(i=0; i<o->count; i++)
     {
       eattr *a = &n->attrs[i];
-      if (!(a->type & EAF_EMBEDDED))
+      if (a->type & EAF_EMBEDDED)
+	; /* Do nothing */
+      else if (a->type & EAF_VAR_LENGTH)
 	{
 	  unsigned size = sizeof(struct adata) + a->u.ptr->length;
 	  ASSERT_DIE(adpos + size <= elen);
@@ -783,6 +814,22 @@ ea_list_copy(ea_list *o)
 
 	  adpos += size;
 	}
+      else switch (a->type)
+	{
+	  case EAF_TYPE_IP_ADDRESS:;
+	    unsigned size = sizeof(ip_addr);
+	    ASSERT_DIE(adpos + size <= elen);
+
+	    ip_addr *ip = ((void *) n) + adpos;
+	    memcpy(ip, a->u.ip, size);
+	    a->u.ip = ip;
+
+	    adpos += size;
+	    break;
+	  default:
+	    bug("Unknown attribute type in copying");
+	}
+
     }
   ASSERT_DIE(adpos == elen);
   return n;
@@ -911,7 +958,6 @@ ea_show(struct cli *c, const eattr *e)
 {
   struct protocol *p;
   int status = GA_UNKNOWN;
-  const struct adata *ad = (e->type & EAF_EMBEDDED) ? NULL : e->u.ptr;
   byte buf[CLI_MSG_SIZE];
   byte *pos = buf, *end = buf + sizeof(buf);
 
@@ -954,25 +1000,25 @@ ea_show(struct cli *c, const eattr *e)
 	  bsprintf(pos, "%u", e->u.data);
 	  break;
 	case EAF_TYPE_OPAQUE:
-	  opaque_format(ad, pos, end - pos);
+	  opaque_format(e->u.ptr, pos, end - pos);
 	  break;
 	case EAF_TYPE_IP_ADDRESS:
-	  bsprintf(pos, "%I", *(ip_addr *) ad->data);
+	  bsprintf(pos, "%I", *e->u.ip);
 	  break;
 	case EAF_TYPE_ROUTER_ID:
 	  bsprintf(pos, "%R", e->u.data);
 	  break;
 	case EAF_TYPE_AS_PATH:
-	  as_path_format(ad, pos, end - pos);
+	  as_path_format(e->u.ptr, pos, end - pos);
 	  break;
 	case EAF_TYPE_INT_SET:
-	  ea_show_int_set(c, ad, 1, pos, buf, end);
+	  ea_show_int_set(c, e->u.ptr, 1, pos, buf, end);
 	  return;
 	case EAF_TYPE_EC_SET:
-	  ea_show_ec_set(c, ad, pos, buf, end);
+	  ea_show_ec_set(c, e->u.ptr, pos, buf, end);
 	  return;
 	case EAF_TYPE_LC_SET:
-	  ea_show_lc_set(c, ad, pos, buf, end);
+	  ea_show_lc_set(c, e->u.ptr, pos, buf, end);
 	  return;
 	default:
 	  bsprintf(pos, "<type %02x>", e->type);
@@ -1013,12 +1059,20 @@ ea_dump(ea_list *e)
 	    debug("o");
 	  if (a->type & EAF_EMBEDDED)
 	    debug(":%08x", a->u.data);
-	  else
+	  else if (a->type & EAF_VAR_LENGTH)
 	    {
 	      int j, len = a->u.ptr->length;
 	      debug("[%d]:", len);
 	      for(j=0; j<len; j++)
 		debug("%02x", a->u.ptr->data[j]);
+	    }
+	  else switch (a->type)
+	    {
+	      case EAF_TYPE_IP_ADDRESS:
+		debug("%I", *a->u.ip);
+		break;
+	      default:
+		bug("Unknown eattr type");
 	    }
 	}
       if (e = e->next)
@@ -1048,10 +1102,18 @@ ea_hash(ea_list *e)
 	  h ^= a->id; h *= mul;
 	  if (a->type & EAF_EMBEDDED)
 	    h ^= a->u.data;
-	  else
+	  else if (a->type & EAF_VAR_LENGTH)
 	    {
 	      const struct adata *d = a->u.ptr;
 	      h ^= mem_hash(d->data, d->length);
+	    }
+	  else switch (a->type)
+	    {
+	      case EAF_TYPE_IP_ADDRESS:
+		h ^= ipa_hash(*a->u.ip);
+		break;
+	      default:
+		bug("Unknown eattr type in hashing");
 	    }
 	  h *= mul;
 	}

@@ -183,9 +183,9 @@ val_compare(const struct f_val *v1, const struct f_val *v2)
 
     /* IP->Quad implicit conversion */
     if ((v1->type == T_QUAD) && val_is_ip4(v2))
-      return uint_cmp(v1->val.i, ipa_to_u32(v2->val.ip));
+      return uint_cmp(v1->val.i, ipa_to_u32(*v2->val.ip));
     if (val_is_ip4(v1) && (v2->type == T_QUAD))
-      return uint_cmp(ipa_to_u32(v1->val.ip), v2->val.i);
+      return uint_cmp(ipa_to_u32(*v1->val.ip), v2->val.i);
 
     debug( "Types do not match in val_compare\n" );
     return F_CMP_ERROR;
@@ -206,7 +206,7 @@ val_compare(const struct f_val *v1, const struct f_val *v2)
   case T_LC:
     return lcomm_cmp(v1->val.lc, v2->val.lc);
   case T_IP:
-    return ipa_compare(v1->val.ip, v2->val.ip);
+    return ipa_compare(*v1->val.ip, *v2->val.ip);
   case T_NET:
     return net_compare(v1->val.net, v2->val.net);
   case T_STRING:
@@ -514,7 +514,7 @@ val_in_range(const struct f_val *v1, const struct f_val *v2)
     return int_set_contains(v2->val.ad, v1->val.i);
   /* IP->Quad implicit conversion */
   if (val_is_ip4(v1) && (v2->type == T_CLIST))
-    return int_set_contains(v2->val.ad, ipa_to_u32(v1->val.ip));
+    return int_set_contains(v2->val.ad, ipa_to_u32(*v1->val.ip));
 
   if ((v1->type == T_EC) && (v2->type == T_ECLIST))
     return ec_set_contains(v2->val.ad, v1->val.ec);
@@ -526,7 +526,7 @@ val_in_range(const struct f_val *v1, const struct f_val *v2)
     return patmatch(v2->val.s, v1->val.s);
 
   if ((v1->type == T_IP) && (v2->type == T_NET))
-    return ipa_in_netX(v1->val.ip, v2->val.net);
+    return ipa_in_netX(*v1->val.ip, v2->val.net);
 
   if ((v1->type == T_NET) && (v2->type == T_NET))
     return net_in_netX(v1->val.net, v2->val.net);
@@ -570,7 +570,7 @@ val_format(const struct f_val *v, buffer *buf)
   case T_BOOL:	buffer_puts(buf, v->val.i ? "TRUE" : "FALSE"); return;
   case T_INT:	buffer_print(buf, "%u", v->val.i); return;
   case T_STRING: buffer_print(buf, "%s", v->val.s); return;
-  case T_IP:	buffer_print(buf, "%I", v->val.ip); return;
+  case T_IP:	buffer_print(buf, "%I", *v->val.ip); return;
   case T_NET:   buffer_print(buf, "%N", v->val.net); return;
   case T_PAIR:	buffer_print(buf, "(%u,%u)", v->val.i >> 16, v->val.i & 0xffff); return;
   case T_QUAD:	buffer_print(buf, "%R", v->val.i); return;

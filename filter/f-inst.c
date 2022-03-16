@@ -298,7 +298,7 @@
     }
     /* IP->Quad implicit conversion */
     else if (val_is_ip4(&v1)) {
-      ipv4_used = 1; key = ipa_to_u32(v1.val.ip);
+      ipv4_used = 1; key = ipa_to_u32(*v1.val.ip);
     }
     else
       runtime("Argument 1 of EC constructor must be integer or IPv4 address, got 0x%02x", v1.type);
@@ -454,7 +454,7 @@
 
   INST(FI_IS_V4, 1, 1) {
     ARG(1, T_IP);
-    RESULT(T_BOOL, i, ipa_is_ip4(v1.val.ip));
+    RESULT(T_BOOL, i, ipa_is_ip4(*v1.val.ip));
   }
 
   /* Set to indirect value prepared in v1 */
@@ -533,8 +533,8 @@
 
       switch (sa.sa_code)
       {
-      case SA_FROM:	RESULT(sa.f_type, ip, rta->from); break;
-      case SA_GW:	RESULT(sa.f_type, ip, rta->nh.gw); break;
+      case SA_FROM:	RESULT(sa.f_type, ip, fputip(rta->from)); break;
+      case SA_GW:	RESULT(sa.f_type, ip, fputip(rta->nh.gw)); break;
       case SA_NET:	RESULT(sa.f_type, net, (*fs->rte)->net->n.addr); break;
       case SA_PROTO:	RESULT(sa.f_type, s, (*fs->rte)->src->proto->name); break;
       case SA_SOURCE:	RESULT(sa.f_type, i, rta->source); break;
@@ -565,12 +565,12 @@
       switch (sa.sa_code)
       {
       case SA_FROM:
-	rta->from = v1.val.ip;
+	rta->from = *v1.val.ip;
 	break;
 
       case SA_GW:
 	{
-	  ip_addr ip = v1.val.ip;
+	  ip_addr ip = *v1.val.ip;
 	  struct iface *ifa = ipa_is_link_local(ip) ? rta->nh.iface : NULL;
 	  neighbor *n = neigh_find((*fs->rte)->src->proto, ip, ifa, 0);
 	  if (!n || (n->scope == SCOPE_HOST))
@@ -707,8 +707,10 @@
 	RESULT_(T_ENUM_EMPTY, i, 0);
 	break;
       case EAF_TYPE_IP_ADDRESS:
+	RESULT_(T_IP, ip, e->u.ip);
+	break;
       case EAF_TYPE_BGP_NEXT_HOP:
-	RESULT_(T_IP, ip, *((ip_addr *) e->u.ptr->data));
+	RESULT_(T_IP, ip, ((const ip_addr *) e->u.ptr->data));
 	break;
       case EAF_TYPE_AS_PATH:
 	RESULT_(T_PATH, ad, e->u.ptr);
@@ -757,11 +759,14 @@
 	break;
 
       case EAF_TYPE_IP_ADDRESS:;
+	l->attrs[0].u.ip = v1.val.ip;
+	break;
+
       case EAF_TYPE_BGP_NEXT_HOP:;
 	int len = sizeof(ip_addr);
 	struct adata *ad = lp_alloc(fs->pool, sizeof(struct adata) + len);
 	ad->length = len;
-	(* (ip_addr *) ad->data) = v1.val.ip;
+	(* (ip_addr *) ad->data) = *v1.val.ip;
 	l->attrs[0].u.ptr = ad;
 	break;
 
@@ -912,7 +917,7 @@
 
   INST(FI_IP, 1, 1) {	/* Convert prefix to ... */
     ARG(1, T_NET);
-    RESULT(T_IP, ip, net_prefix(v1.val.net));
+    RESULT(T_IP, ip, fputip(net_prefix(v1.val.net)));
   }
 
   INST(FI_ROUTE_DISTINGUISHER, 1, 1) {
@@ -1112,9 +1117,10 @@
   INST(FI_IP_MASK, 2, 1) { /* IP.MASK(val) */
     ARG(1, T_IP);
     ARG(2, T_INT);
-    RESULT(T_IP, ip, [[ ipa_is_ip4(v1.val.ip) ?
-      ipa_from_ip4(ip4_and(ipa_to_ip4(v1.val.ip), ip4_mkmask(v2.val.i))) :
-      ipa_from_ip6(ip6_and(ipa_to_ip6(v1.val.ip), ip6_mkmask(v2.val.i))) ]]);
+
+    RESULT(T_IP, ip, [[ fputip(ipa_is_ip4(*v1.val.ip) ?
+      ipa_from_ip4(ip4_and(ipa_to_ip4(*v1.val.ip), ip4_mkmask(v2.val.i))) :
+      ipa_from_ip6(ip6_and(ipa_to_ip6(*v1.val.ip), ip6_mkmask(v2.val.i)))) ]]);
   }
 
   INST(FI_PATH_PREPEND, 2, 1) {	/* Path prepend */
@@ -1140,7 +1146,7 @@
 	RESULT_(T_CLIST, ad, [[ int_set_add(fpool, v1.val.ad, v2.val.i) ]]);
       /* IP->Quad implicit conversion */
       else if (val_is_ip4(&v2))
-	RESULT_(T_CLIST, ad, [[ int_set_add(fpool, v1.val.ad, ipa_to_u32(v2.val.ip)) ]]);
+	RESULT_(T_CLIST, ad, [[ int_set_add(fpool, v1.val.ad, ipa_to_u32(*v2.val.ip)) ]]);
       else if ((v2.type == T_SET) && clist_set_type(v2.val.t, &dummy))
 	runtime("Can't add set");
       else if (v2.type == T_CLIST)
@@ -1209,7 +1215,7 @@
 	RESULT_(T_CLIST, ad, [[ int_set_del(fpool, v1.val.ad, v2.val.i) ]]);
       /* IP->Quad implicit conversion */
       else if (val_is_ip4(&v2))
-	RESULT_(T_CLIST, ad, [[ int_set_del(fpool, v1.val.ad, ipa_to_u32(v2.val.ip)) ]]);
+	RESULT_(T_CLIST, ad, [[ int_set_del(fpool, v1.val.ad, ipa_to_u32(*v2.val.ip)) ]]);
       else if ((v2.type == T_SET) && clist_set_type(v2.val.t, &dummy) || (v2.type == T_CLIST))
 	RESULT_(T_CLIST, ad, [[ clist_filter(fpool, v1.val.ad, &v2, 0) ]]);
       else

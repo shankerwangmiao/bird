@@ -525,8 +525,18 @@ block:
  * Complex types, their bison value is struct f_val
  */
 fipa:
-   IP4 %prec PREFIX_DUMMY { $$.type = T_IP; $$.val.ip = ipa_from_ip4($1); }
- | IP6 %prec PREFIX_DUMMY { $$.type = T_IP; $$.val.ip = ipa_from_ip6($1); }
+   IP4 %prec PREFIX_DUMMY {
+      ip_addr *ip = cfg_alloc(sizeof(ip_addr));
+      *ip = ipa_from_ip4($1);
+      $$.type = T_IP;
+      $$.val.ip = ip;
+    }
+ | IP6 %prec PREFIX_DUMMY {
+      ip_addr *ip = cfg_alloc(sizeof(ip_addr));
+      *ip = ipa_from_ip6($1);
+      $$.type = T_IP;
+      $$.val.ip = ip;
+    }
  ;
 
 

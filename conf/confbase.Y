@@ -193,7 +193,7 @@ ipa:
  | IP6 { $$ = ipa_from_ip6($1); }
  | CF_SYM_KNOWN {
      if ($1->class != (SYM_CONSTANT | T_IP)) cf_error("IP address constant expected");
-     $$ = SYM_VAL($1).ip;
+     $$ = *SYM_VAL($1).ip;
    }
  ;
 
@@ -338,7 +338,7 @@ net_or_ipa:
  | IP6 { net_fill_ip6(&($$), $1, IP6_MAX_PREFIX_LENGTH); }
  | CF_SYM_KNOWN {
      if ($1->class == (SYM_CONSTANT | T_IP))
-       net_fill_ip_host(&($$), SYM_VAL($1).ip);
+       net_fill_ip_host(&($$), *SYM_VAL($1).ip);
      else if (($1->class == (SYM_CONSTANT | T_NET)) && net_is_ip(SYM_VAL($1).net))
        $$ = * SYM_VAL($1).net;
      else

@@ -70,7 +70,8 @@ struct f_val {
     uint i;
     u64 ec;
     lcomm lc;
-    ip_addr ip;
+    const ip_addr *ip;
+#define fputip(a)   ({ ip_addr *ax = falloc(sizeof(*ax)); *ax = (a); ax; })
     const net_addr *net;
     const char *s;
     const struct f_tree *t;
@@ -275,7 +276,7 @@ char *val_format_str(struct linpool *lp, const struct f_val *v);
 const char *val_dump(const struct f_val *v);
 
 static inline int val_is_ip4(const struct f_val *v)
-{ return (v->type == T_IP) && ipa_is_ip4(v->val.ip); }
+{ return (v->type == T_IP) && ipa_is_ip4(*(v->val.ip)); }
 int val_in_range(const struct f_val *v1, const struct f_val *v2);
 
 int clist_set_type(const struct f_tree *set, struct f_val *v);

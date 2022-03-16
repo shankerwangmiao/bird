@@ -509,6 +509,7 @@ typedef struct eattr {
   union {
     uintptr_t data;
     const struct adata *ptr;		/* Attribute data elsewhere */
+    const ip_addr *ip;
   } u;
 } eattr;
 

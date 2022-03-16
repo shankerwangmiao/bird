@@ -497,10 +497,10 @@ f_const_promotion(struct f_inst *arg, enum f_type want)
 
   struct f_val *c = &arg->i_FI_CONSTANT.val;
 
-  if ((c->type == T_IP) && ipa_is_ip4(c->val.ip) && (want == T_QUAD)) {
+  if ((c->type == T_IP) && ipa_is_ip4(*c->val.ip) && (want == T_QUAD)) {
     *c = (struct f_val) {
       .type = T_QUAD,
-      .val.i = ipa_to_u32(c->val.ip),
+      .val.i = ipa_to_u32(*c->val.ip),
     };
     return 1;
   }

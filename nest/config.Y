@@ -170,8 +170,8 @@ idval:
  | CF_SYM_KNOWN {
      if ($1->class == (SYM_CONSTANT | T_INT) || $1->class == (SYM_CONSTANT | T_QUAD))
        $$ = SYM_VAL($1).i;
-     else if (($1->class == (SYM_CONSTANT | T_IP)) && ipa_is_ip4(SYM_VAL($1).ip))
-       $$ = ipa_to_u32(SYM_VAL($1).ip);
+     else if (($1->class == (SYM_CONSTANT | T_IP)) && ipa_is_ip4(*SYM_VAL($1).ip))
+       $$ = ipa_to_u32(*SYM_VAL($1).ip);
      else
        cf_error("Number or IPv4 address constant expected");
    }
@@ -763,8 +763,8 @@ r_args_for:
  | CF_SYM_KNOWN {
      if ($1->class == (SYM_CONSTANT | T_IP))
      {
-       $$ = cfg_alloc(ipa_is_ip4(SYM_VAL($1).ip) ? sizeof(net_addr_ip4) : sizeof(net_addr_ip6));
-       net_fill_ip_host($$, SYM_VAL($1).ip);
+       $$ = cfg_alloc(ipa_is_ip4(*SYM_VAL($1).ip) ? sizeof(net_addr_ip4) : sizeof(net_addr_ip6));
+       net_fill_ip_host($$, *SYM_VAL($1).ip);
      }
      else if (($1->class == (SYM_CONSTANT | T_NET)) && net_type_match(SYM_VAL($1).net, NB_IP | NB_VPN))
        $$ = (net_addr *) SYM_VAL($1).net; /* Avoid const warning */
