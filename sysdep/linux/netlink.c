@@ -27,6 +27,7 @@
 #include "lib/string.h"
 #include "lib/hash.h"
 #include "conf/conf.h"
+#include "filter/f-type.h"
 
 #include <asm/types.h>
 #include <linux/if.h>
@@ -120,6 +121,137 @@ struct nl_parse_state
 
   u32 rta_flow;		/* Used during parsing */
 };
+
+/*
+ *	Netlink eattr definitions
+ */
+
+#define KRT_METRICS_MAX		ARRAY_SIZE(ea_krt_metrics)
+#define KRT_FEATURES_MAX	4
+
+static void krt_bitfield_format(const eattr *e, byte *buf, uint buflen);
+
+static struct ea_def
+  ea_krt_prefsrc = {
+    .name = "krt_prefsrc",
+    .type = EAF_TYPE_IP_ADDRESS,
+    .f_type = T_IP,
+  },
+  ea_krt_realm = {
+    .name = "krt_realm",
+    .type = EAF_TYPE_INT,
+    .f_type = T_INT,
+  },
+  ea_krt_scope = {
+    .name = "krt_scope",
+    .type = EAF_TYPE_INT,
+    .f_type = T_INT,
+  };
+
+static struct ea_def ea_krt_metrics[] = {
+  [RTAX_LOCK] = {
+    .name = "krt_lock",
+    .type = EAF_TYPE_BITFIELD,
+    .f_type = T_BOOL,
+    .format = krt_bitfield_format,
+  },
+  [RTAX_FEATURES] = {
+    .name = "krt_features",
+    .type = EAF_TYPE_BITFIELD,
+    .f_type = T_BOOL,
+    .format = krt_bitfield_format,
+  },
+#define KRT_METRIC_INT(_rtax, _name)	[_rtax] = { .name = _name, .type = EAF_TYPE_INT, .f_type = T_INT }
+  KRT_METRIC_INT(RTAX_MTU, "krt_mtu"),
+  KRT_METRIC_INT(RTAX_WINDOW, "krt_window"),
+  KRT_METRIC_INT(RTAX_RTT, "krt_rtt"),
+  KRT_METRIC_INT(RTAX_RTTVAR, "krt_rttvar"),
+  KRT_METRIC_INT(RTAX_SSTHRESH, "krt_sstresh"),
+  KRT_METRIC_INT(RTAX_CWND, "krt_cwnd"),
+  KRT_METRIC_INT(RTAX_ADVMSS, "krt_advmss"),
+  KRT_METRIC_INT(RTAX_REORDERING, "krt_reordering"),
+  KRT_METRIC_INT(RTAX_HOPLIMIT, "krt_hoplimit"),
+  KRT_METRIC_INT(RTAX_INITCWND, "krt_initcwnd"),
+  KRT_METRIC_INT(RTAX_RTO_MIN, "krt_rto_min"),
+  KRT_METRIC_INT(RTAX_INITRWND, "krt_initrwnd"),
+  KRT_METRIC_INT(RTAX_QUICKACK, "krt_quickack"),
+#undef KRT_METRIC_INT
+};
+
+#define KRT_EA_BIT(_rtax, _name)	{ .name = _name, .type = EAF_TYPE_BITFIELD, .f_type = T_BOOL, .bit = _rtax }
+static struct ea_def ea_krt_lock_bits[] = {
+  KRT_EA_BIT(RTAX_MTU, "krt_lock_mtu"),
+  KRT_EA_BIT(RTAX_WINDOW, "krt_locK_window"),
+  KRT_EA_BIT(RTAX_RTT, "krt_lock_rtt"),
+  KRT_EA_BIT(RTAX_RTTVAR, "krt_lock_rttvar"),
+  KRT_EA_BIT(RTAX_SSTHRESH, "krt_lock_sstresh"),
+  KRT_EA_BIT(RTAX_CWND, "krt_lock_cwnd"),
+  KRT_EA_BIT(RTAX_ADVMSS, "krt_lock_advmss"),
+  KRT_EA_BIT(RTAX_REORDERING, "krt_lock_reordering"),
+  KRT_EA_BIT(RTAX_HOPLIMIT, "krt_lock_hoplimit"),
+  KRT_EA_BIT(RTAX_RTO_MIN, "krt_lock_rto_min"),
+};
+
+static struct ea_def ea_krt_features_bits[] = {
+  KRT_EA_BIT(RTAX_FEATURE_ECN, "krt_feature_ecn"),
+  KRT_EA_BIT(RTAX_FEATURE_ALLFRAG, "krt_feature_allfrag"),
+};
+#undef KRT_EA_BIT
+
+static const char *krt_metrics_names[KRT_METRICS_MAX] = {
+  NULL, "lock", "mtu", "window", "rtt", "rttvar", "sstresh", "cwnd", "advmss",
+  "reordering", "hoplimit", "initcwnd", "features", "rto_min", "initrwnd", "quickack"
+};
+
+static const char *krt_features_names[KRT_FEATURES_MAX] = {
+  "ecn", NULL, NULL, "allfrag"
+};
+
+static void
+krt_bitfield_format(const eattr *a, byte *buf, uint buflen)
+{
+  if (a->id == ea_krt_metrics[RTAX_LOCK].id)
+    ea_format_bitfield(a, buf, buflen, krt_metrics_names, 2, KRT_METRICS_MAX);
+  else if (a->id == ea_krt_metrics[RTAX_FEATURES].id)
+    ea_format_bitfield(a, buf, buflen, krt_features_names, 0, KRT_FEATURES_MAX);
+}
+
+static void
+nl_ea_register(void)
+{
+  EA_REGISTER_ALL(
+      &ea_krt_prefsrc,
+      &ea_krt_realm,
+      &ea_krt_scope
+      );
+
+  for (uint i = 0; i < KRT_METRICS_MAX; i++)
+  {
+    if (!ea_krt_metrics[i].name)
+      ea_krt_metrics[i] = (struct ea_def) {
+	.name = mb_sprintf(&root_pool, "krt_metric_%d", i)
+      };
+
+    ea_register(&ea_krt_metrics[i]);
+  }
+
+  for (uint i = 1; i < KRT_METRICS_MAX; i++)
+    ASSERT_DIE(ea_krt_metrics[i].id == ea_krt_metrics[0].id + i);
+
+  for (uint i = 0; i < ARRAY_SIZE(ea_krt_lock_bits); i++)
+  {
+    ea_krt_lock_bits[i].id = ea_krt_metrics[RTAX_LOCK].id;
+    ea_register_bit(&ea_krt_lock_bits[i]);
+  }
+
+  for (uint i = 0; i < ARRAY_SIZE(ea_krt_features_bits); i++)
+  {
+    ea_krt_features_bits[i].id = ea_krt_metrics[RTAX_FEATURES].id;
+    ea_register_bit(&ea_krt_features_bits[i]);
+  }
+}
+
+
 
 /*
  *	Synchronous Netlink interface
@@ -734,7 +866,7 @@ static void
 nl_add_multipath(struct nlmsghdr *h, uint bufsize, struct nexthop *nh, int af, ea_list *eattrs)
 {
   struct rtattr *a = nl_open_attr(h, bufsize, RTA_MULTIPATH);
-  eattr *flow = ea_find(eattrs, EA_KRT_REALM);
+  eattr *flow = ea_find(eattrs, &ea_krt_realm);
 
   for (; nh; nh = nh->next)
   {
@@ -1399,7 +1531,7 @@ nl_send_route(struct krt_proto *p, rte *e, int op, int dest, struct nexthop *nh)
     priority = 0;
   else if (KRT_CF->sys.metric)
     priority = KRT_CF->sys.metric;
-  else if ((op != NL_OP_DELETE) && (ea = ea_find(eattrs, EA_KRT_METRIC)))
+  else if ((op != NL_OP_DELETE) && (ea = ea_find(eattrs, &ea_krt_metric)))
     priority = ea->u.data;
 
   if (priority)
@@ -1412,15 +1544,15 @@ nl_send_route(struct krt_proto *p, rte *e, int op, int dest, struct nexthop *nh)
   /* Default scope is LINK for device routes, UNIVERSE otherwise */
   if (p->af == AF_MPLS)
     r->r.rtm_scope = RT_SCOPE_UNIVERSE;
-  else if (ea = ea_find(eattrs, EA_KRT_SCOPE))
+  else if (ea = ea_find(eattrs, &ea_krt_scope))
     r->r.rtm_scope = ea->u.data;
   else
     r->r.rtm_scope = (dest == RTD_UNICAST && ipa_zero(nh->gw)) ? RT_SCOPE_LINK : RT_SCOPE_UNIVERSE;
 
-  if (ea = ea_find(eattrs, EA_KRT_PREFSRC))
+  if (ea = ea_find(eattrs, &ea_krt_prefsrc))
     nl_add_attr_ipa(&r->h, rsize, RTA_PREFSRC, *(ip_addr *)ea->u.ptr->data);
 
-  if (ea = ea_find(eattrs, EA_KRT_REALM))
+  if (ea = ea_find(eattrs, &ea_krt_realm))
     nl_add_attr_u32(&r->h, rsize, RTA_FLOW, ea->u.data);
 
 
@@ -1428,9 +1560,9 @@ nl_send_route(struct krt_proto *p, rte *e, int op, int dest, struct nexthop *nh)
   metrics[0] = 0;
 
   struct ea_walk_state ews = { .eattrs = eattrs };
-  while (ea = ea_walk(&ews, EA_KRT_METRICS, KRT_METRICS_MAX))
+  while (ea = ea_walk(&ews, ea_krt_metrics[0].id, KRT_METRICS_MAX))
   {
-    int id = ea->id - EA_KRT_METRICS;
+    int id = ea->id - ea_krt_metrics[0].id;
     metrics[0] |= 1 << id;
     metrics[id] = ea->u.data;
   }
@@ -1585,16 +1717,8 @@ nl_announce_route(struct nl_parse_state *s)
   *ea = (ea_list) { .count = 2, .next = e->attrs->eattrs };
   e->attrs->eattrs = ea;
 
-  ea->attrs[0] = (eattr) {
-    .id = EA_KRT_SOURCE,
-    .type = EAF_TYPE_INT,
-    .u.data = s->krt_proto,
-  };
-  ea->attrs[1] = (eattr) {
-    .id = EA_KRT_METRIC,
-    .type = EAF_TYPE_INT,
-    .u.data = s->krt_metric,
-  };
+  ea->attrs[0] = EA_LITERAL(&ea_krt_source, .u.data = s->krt_proto);
+  ea->attrs[1] = EA_LITERAL(&ea_krt_metric, .u.data = s->krt_metric);
 
   if (s->scan)
     krt_got_route(s->proto, e, s->krt_src);
@@ -1865,57 +1989,23 @@ nl_parse_route(struct nl_parse_state *s, struct nlmsghdr *h)
 #endif
 
   if (i->rtm_scope != def_scope)
-    {
-      ea_list *ea = lp_alloc(s->pool, sizeof(ea_list) + sizeof(eattr));
-      ea->next = ra->eattrs;
-      ra->eattrs = ea;
-      ea->flags = EALF_SORTED;
-      ea->count = 1;
-      ea->attrs[0].id = EA_KRT_SCOPE;
-      ea->attrs[0].flags = 0;
-      ea->attrs[0].type = EAF_TYPE_INT;
-      ea->attrs[0].u.data = i->rtm_scope;
-    }
+    ea_set_attr_u32(&ra->eattrs, s->pool, &ea_krt_scope, 0, i->rtm_scope);
 
   if (a[RTA_PREFSRC])
     {
       ip_addr ps = rta_get_ipa(a[RTA_PREFSRC]);
-
-      ea_list *ea = lp_alloc(s->pool, sizeof(ea_list) + sizeof(eattr));
-      ea->next = ra->eattrs;
-      ra->eattrs = ea;
-      ea->flags = EALF_SORTED;
-      ea->count = 1;
-      ea->attrs[0].id = EA_KRT_PREFSRC;
-      ea->attrs[0].flags = 0;
-      ea->attrs[0].type = EAF_TYPE_IP_ADDRESS;
-
-      struct adata *ad = lp_alloc(s->pool, sizeof(struct adata) + sizeof(ps));
-      ad->length = sizeof(ps);
-      memcpy(ad->data, &ps, sizeof(ps));
-
-      ea->attrs[0].u.ptr = ad;
+      ea_set_attr_data(&ra->eattrs, s->pool, &ea_krt_prefsrc, 0, &ps, sizeof(ps));
     }
 
   /* Can be set per-route or per-nexthop */
   if (s->rta_flow)
-    {
-      ea_list *ea = lp_alloc(s->pool, sizeof(ea_list) + sizeof(eattr));
-      ea->next = ra->eattrs;
-      ra->eattrs = ea;
-      ea->flags = EALF_SORTED;
-      ea->count = 1;
-      ea->attrs[0].id = EA_KRT_REALM;
-      ea->attrs[0].flags = 0;
-      ea->attrs[0].type = EAF_TYPE_INT;
-      ea->attrs[0].u.data = s->rta_flow;
-    }
+    ea_set_attr_u32(&ra->eattrs, s->pool, &ea_krt_realm, 0, s->rta_flow);
 
   if (a[RTA_METRICS])
     {
       u32 metrics[KRT_METRICS_MAX];
       ea_list *ea = lp_alloc(s->pool, sizeof(ea_list) + KRT_METRICS_MAX * sizeof(eattr));
-      int t, n = 0;
+      int n = 0;
 
       if (nl_parse_metrics(a[RTA_METRICS], metrics, ARRAY_SIZE(metrics)) < 0)
         {
@@ -1923,15 +2013,9 @@ nl_parse_route(struct nl_parse_state *s, struct nlmsghdr *h)
 	  return;
 	}
 
-      for (t = 1; t < KRT_METRICS_MAX; t++)
+      for (uint t = 1; t < KRT_METRICS_MAX; t++)
 	if (metrics[0] & (1 << t))
-	  {
-	    ea->attrs[n].id = EA_CODE(PROTOCOL_KERNEL, KRT_METRICS_OFFSET + t);
-	    ea->attrs[n].flags = 0;
-	    ea->attrs[n].type = EAF_TYPE_INT; /* FIXME: Some are EAF_TYPE_BITFIELD */
-	    ea->attrs[n].u.data = metrics[t];
-	    n++;
-	  }
+	  ea->attrs[n++] = EA_LITERAL(&ea_krt_metrics[t], metrics[t]);
 
       if (n > 0)
         {
@@ -2177,6 +2261,8 @@ krt_sys_io_init(void)
 {
   nl_linpool = lp_new_default(krt_pool);
   HASH_INIT(nl_table_map, krt_pool, 6);
+
+  nl_ea_register();
 }
 
 int
@@ -2229,56 +2315,6 @@ krt_sys_copy_config(struct krt_config *d, struct krt_config *s)
   d->sys.table_id = s->sys.table_id;
   d->sys.metric = s->sys.metric;
 }
-
-static const char *krt_metrics_names[KRT_METRICS_MAX] = {
-  NULL, "lock", "mtu", "window", "rtt", "rttvar", "sstresh", "cwnd", "advmss",
-  "reordering", "hoplimit", "initcwnd", "features", "rto_min", "initrwnd", "quickack"
-};
-
-static const char *krt_features_names[KRT_FEATURES_MAX] = {
-  "ecn", NULL, NULL, "allfrag"
-};
-
-int
-krt_sys_get_attr(const eattr *a, byte *buf, int buflen UNUSED)
-{
-  switch (a->id)
-  {
-  case EA_KRT_PREFSRC:
-    bsprintf(buf, "prefsrc");
-    return GA_NAME;
-
-  case EA_KRT_REALM:
-    bsprintf(buf, "realm");
-    return GA_NAME;
-
-  case EA_KRT_SCOPE:
-    bsprintf(buf, "scope");
-    return GA_NAME;
-
-  case EA_KRT_LOCK:
-    buf += bsprintf(buf, "lock:");
-    ea_format_bitfield(a, buf, buflen, krt_metrics_names, 2, KRT_METRICS_MAX);
-    return GA_FULL;
-
-  case EA_KRT_FEATURES:
-    buf += bsprintf(buf, "features:");
-    ea_format_bitfield(a, buf, buflen, krt_features_names, 0, KRT_FEATURES_MAX);
-    return GA_FULL;
-
-  default:;
-    int id = (int)EA_ID(a->id) - KRT_METRICS_OFFSET;
-    if (id > 0 && id < KRT_METRICS_MAX)
-    {
-      bsprintf(buf, "%s", krt_metrics_names[id]);
-      return GA_NAME;
-    }
-
-    return GA_UNKNOWN;
-  }
-}
-
-
 
 void
 kif_sys_start(struct kif_proto *p UNUSED)

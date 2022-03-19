@@ -56,9 +56,17 @@
 #include "lib/resource.h"
 #include "lib/string.h"
 
+#include "filter/f-type.h"
+
 #include <stddef.h>
 
 const adata null_adata;		/* adata of length 0 */
+
+struct ea_def ea_gen_igp_metric = {
+  .name = "igp_metric",
+  .type = EAF_TYPE_INT,
+  .f_type = T_INT,
+};
 
 const char * const rta_src_names[RTS_MAX] = {
   [RTS_STATIC]		= "static",
@@ -401,6 +409,67 @@ nexthop_free(struct nexthop *o)
  *	Extended Attributes
  */
 
+#define EA_DEF_INITIAL_MAX	128
+static const struct ea_def **ea_def_global = NULL;
+
+static uint ea_def_count = 1;	/* Zero ID reserved for convenience */
+static uint ea_def_max = EA_DEF_INITIAL_MAX;
+
+/* Config parser lex register function */
+void ea_lex_register(struct ea_def *def);
+void ea_lex_unregister(struct ea_def *def);
+
+void 
+ea_register(struct ea_def *def)
+{
+  ASSERT_DIE(!def->id);
+  ASSERT_DIE(!ea_def_find_by_name(def->name));
+
+  if (!ea_def_global)
+    ea_def_global = mb_allocz(&root_pool,
+	sizeof(*ea_def_global) * (ea_def_max = EA_DEF_INITIAL_MAX));
+
+  else if (ea_def_count == ea_def_max)
+    ea_def_global = mb_realloc(&root_pool, ea_def_global,
+	sizeof(*ea_def_global) * (ea_def_max *= 2));
+
+  ASSERT_DIE(ea_def_count < ea_def_max);
+  def->id = ea_def_count++;
+  ea_def_global[def->id] = def;
+
+  ea_lex_register(def);
+}
+
+void
+ea_register_bit(struct ea_def *def)
+{
+  ASSERT_DIE(def->id && (def->id < ea_def_count));
+
+  const struct ea_def *parent = ea_def_global[def->id];
+  ASSERT_DIE(parent->type == EAF_TYPE_BITFIELD);
+
+  ea_lex_register(def);
+}
+
+void
+ea_unregister(struct ea_def *def)
+{
+  ASSERT_DIE(def->id);
+
+  ea_lex_unregister(def);
+  if (ea_def_global[def->id] == def)
+    ea_def_global[def->id] = NULL;
+
+  // TODO: use idmap for free attribute id tracking
+}
+
+const struct ea_def *
+ea_def_find_by_id(uint id)
+{
+  ASSERT_DIE(id < ea_def_count);
+  return ea_def_global[id];
+}
+
 static inline eattr *
 ea__find(ea_list *e, unsigned id)
 {
@@ -444,7 +513,7 @@ ea__find(ea_list *e, unsigned id)
  * to its &eattr structure or %NULL if no such attribute exists.
  */
 eattr *
-ea_find(ea_list *e, unsigned id)
+ea_find_by_id(ea_list *e, unsigned id)
 {
   eattr *a = ea__find(e, id & EA_CODE_MASK);
 
@@ -527,25 +596,6 @@ ea_walk(struct ea_walk_state *s, uint id, uint max)
   }
 
   return NULL;
-}
-
-/**
- * ea_get_int - fetch an integer attribute
- * @e: attribute list
- * @id: attribute ID
- * @def: default value
- *
- * This function is a shortcut for retrieving a value of an integer attribute
- * by calling ea_find() to find the attribute, extracting its value or returning
- * a provided default if no such attribute is present.
- */
-uintptr_t
-ea_get_int(ea_list *e, unsigned id, uintptr_t def)
-{
-  eattr *a = ea_find(e, id);
-  if (!a)
-    return def;
-  return a->u.data;
 }
 
 static inline void
@@ -798,18 +848,6 @@ ea_free(ea_list *o)
     }
 }
 
-static int
-get_generic_attr(const eattr *a, byte **buf, int buflen UNUSED)
-{
-  if (a->id == EA_GEN_IGP_METRIC)
-    {
-      *buf += bsprintf(*buf, "igp_metric");
-      return GA_NAME;
-    }
-
-  return GA_UNKNOWN;
-}
-
 void
 ea_format_bitfield(const struct eattr *a, byte *buf, int bufsize, const char **names, int min, int max)
 {
@@ -909,47 +947,25 @@ ea_show_lc_set(struct cli *c, const struct adata *ad, byte *pos, byte *buf, byte
 void
 ea_show(struct cli *c, const eattr *e)
 {
-  struct protocol *p;
-  int status = GA_UNKNOWN;
   const struct adata *ad = (e->type & EAF_EMBEDDED) ? NULL : e->u.ptr;
   byte buf[CLI_MSG_SIZE];
   byte *pos = buf, *end = buf + sizeof(buf);
 
-  if (EA_IS_CUSTOM(e->id))
-    {
-      const char *name = ea_custom_name(e->id);
-      if (name)
-        {
-	  pos += bsprintf(pos, "%s", name);
-	  status = GA_NAME;
-	}
-      else
-	pos += bsprintf(pos, "%02x.", EA_PROTO(e->id));
-    }
-  else if (p = class_to_protocol[EA_PROTO(e->id)])
-    {
-      pos += bsprintf(pos, "%s.", p->name);
-      if (p->get_attr)
-	status = p->get_attr(e, pos, end - pos);
-      pos += strlen(pos);
-    }
-  else if (EA_PROTO(e->id))
-    pos += bsprintf(pos, "%02x.", EA_PROTO(e->id));
+  if (e->id < ea_def_count)
+    pos += bsprintf(pos, "%s", ea_def_global[e->id]->name);
   else
-    status = get_generic_attr(e, &pos, end - pos);
+    pos += bsprintf(pos, "unknown(0x%04x)", e->id);
 
-  if (status < GA_NAME)
-    pos += bsprintf(pos, "%02x", EA_ID(e->id));
-  if (status < GA_FULL)
-    {
-      *pos++ = ':';
-      *pos++ = ' ';
+  *pos++ = ':';
+  *pos++ = ' ';
 
-      if (e->undef)
-	bsprintf(pos, "undefined");
-      else
-      switch (e->type & EAF_TYPE_MASK)
-	{
+  if (e->undef)
+    bsprintf(pos, "undefined (should not happen)");
+  else if ((e->id < ea_def_count) && ea_def_global[e->id]->format)
+    ea_def_global[e->id]->format(e, buf, end - buf);
+  else
+    switch (e->type & EAF_TYPE_MASK)
+      {
 	case EAF_TYPE_INT:
 	  bsprintf(pos, "%u", e->u.data);
 	  break;
@@ -979,8 +995,8 @@ ea_show(struct cli *c, const eattr *e)
 	  return;
 	default:
 	  bsprintf(pos, "<type %02x>", e->type);
-	}
-    }
+      }
+
   cli_printf(c, -1012, "\t%s", buf);
 }
 
@@ -1010,7 +1026,7 @@ ea_dump(ea_list *e)
       for(i=0; i<e->count; i++)
 	{
 	  eattr *a = &e->attrs[i];
-	  debug(" %02x:%02x.%02x", EA_PROTO(a->id), EA_ID(a->id), a->flags);
+	  debug(" %04x.%02x", a->id, a->flags);
 	  debug("=%c", "?iO?I?P???S?????" [a->type & EAF_TYPE_MASK]);
 	  if (a->originated)
 	    debug("o");
@@ -1351,6 +1367,8 @@ rta_init(void)
 
   rta_alloc_hash();
   rte_src_init();
+
+  ea_register(&ea_gen_igp_metric);
 }
 
 /*

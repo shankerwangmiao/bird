@@ -106,6 +106,7 @@
 
 #include <stdlib.h>
 #include "ospf.h"
+#include "filter/f-type.h"
 
 static int ospf_preexport(struct proto *P, rte *new);
 static void ospf_reload_routes(struct channel *C);
@@ -603,26 +604,10 @@ ospf_get_route_info(rte * rte, byte * buf)
     buf += bsprintf(buf, " [%R]", ea->u.data);
 }
 
-static int
-ospf_get_attr(const eattr * a, byte * buf, int buflen UNUSED)
+static void
+ospf_tag_format(const eattr * a, byte * buf, uint buflen)
 {
-  switch (a->id)
-  {
-  case EA_OSPF_METRIC1:
-    bsprintf(buf, "metric1");
-    return GA_NAME;
-  case EA_OSPF_METRIC2:
-    bsprintf(buf, "metric2");
-    return GA_NAME;
-  case EA_OSPF_TAG:
-    bsprintf(buf, "tag: 0x%08x", a->u.data);
-    return GA_FULL;
-  case EA_OSPF_ROUTER_ID:
-    bsprintf(buf, "router_id");
-    return GA_NAME;
-  default:
-    return GA_UNKNOWN;
-  }
+  bsnprintf(buf, buflen, "0x%08x", a->u.data);
 }
 
 static void
@@ -1520,7 +1505,6 @@ ospf_sh_lsadb(struct lsadb_show_data *ld)
 struct protocol proto_ospf = {
   .name =		"OSPF",
   .template =		"ospf%d",
-  .class =		PROTOCOL_OSPF,
   .preference =		DEF_PREF_OSPF,
   .channel_mask =	NB_IP,
   .proto_size =		sizeof(struct ospf_proto),
@@ -1531,12 +1515,43 @@ struct protocol proto_ospf = {
   .shutdown =		ospf_shutdown,
   .reconfigure =	ospf_reconfigure,
   .get_status =		ospf_get_status,
-  .get_attr =		ospf_get_attr,
   .get_route_info =	ospf_get_route_info
+};
+
+struct ea_def ea_ospf_metric1 = {
+  .name = "ospf_metric1",
+  .type = EAF_TYPE_INT,
+  .f_type = T_INT,
+};
+
+struct ea_def ea_ospf_metric2 = {
+  .name = "ospf_metric2",
+  .type = EAF_TYPE_INT,
+  .f_type = T_INT,
+};
+
+struct ea_def ea_ospf_tag = {
+  .name = "ospf_tag",
+  .type = EAF_TYPE_INT,
+  .f_type = T_INT,
+  .format = ospf_tag_format,
+};
+
+struct ea_def ea_ospf_router_id = {
+  .name = "ospf_router_id",
+  .type = EAF_TYPE_ROUTER_ID,
+  .f_type = T_QUAD,
 };
 
 void
 ospf_build(void)
 {
   proto_build(&proto_ospf);
+
+  EA_REGISTER_ALL(
+      &ea_ospf_metric1,
+      &ea_ospf_metric2,
+      &ea_ospf_tag,
+      &ea_ospf_router_id
+  );
 }

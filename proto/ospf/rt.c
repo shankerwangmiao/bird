@@ -2070,31 +2070,15 @@ again1:
 	nf->old_tag = nf->n.tag;
 	nf->old_rid = nf->n.rid;
 
-	a0.eattrs->attrs[a0.eattrs->count++] = (eattr) {
-	  .id = EA_OSPF_METRIC1,
-	  .type = EAF_TYPE_INT,
-	  .u.data = nf->n.metric1,
-	};
+	a0.eattrs->attrs[a0.eattrs->count++] = EA_LITERAL(EA_OSPF_METRIC1, .u.data = nf->n.metric1);
 
 	if (nf->n.type == RTS_OSPF_EXT2)
-	  a0.eattrs->attrs[a0.eattrs->count++] = (eattr) {
-	    .id = EA_OSPF_METRIC2,
-	    .type = EAF_TYPE_INT,
-	    .u.data = nf->n.metric2,
-	  };
+	  a0.eattrs->attrs[a0.eattrs->count++] = EA_LITERAL(EA_OSPF_METRIC2, .u.data = nf->n.metric2);
 
 	if ((nf->n.type == RTS_OSPF_EXT1) || (nf->n.type == RTS_OSPF_EXT2))
-	  a0.eattrs->attrs[a0.eattrs->count++] = (eattr) {
-	    .id = EA_OSPF_TAG,
-	    .type = EAF_TYPE_INT,
-	    .u.data = nf->n.tag,
-	  };
+	  a0.eattrs->attrs[a0.eattrs->count++] = EA_LITERAL(EA_OSPF_TAG, .u.data = nf->n.tag);
 
-	a0.eattrs->attrs[a0.eattrs->count++] = (eattr) {
-	  .id = EA_OSPF_ROUTER_ID,
-	  .type = EAF_TYPE_ROUTER_ID,
-	  .u.data = nf->n.rid,
-	};
+	a0.eattrs->attrs[a0.eattrs->count++] = EA_LITERAL(EA_OSPF_ROUTER_ID, .u.data = nf->n.rid);
 
 	rta *a = rta_lookup(&a0);
 	rte *e = rte_get_temp(a, p->p.main_source);

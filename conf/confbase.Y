@@ -71,7 +71,7 @@ CF_DECLS
   } xp;
   enum filter_return fret;
   enum ec_subtype ecs;
-  struct f_dynamic_attr fda;
+  struct ea_def *ea_def;
   struct f_static_attr fsa;
   struct f_lval flv;
   struct f_line *fl;
@@ -105,6 +105,7 @@ CF_DECLS
 %token <s> CF_SYM_KNOWN CF_SYM_UNDEFINED
 %token <t> TEXT
 %token <bs> BYTESTRING
+%token <ea_def> EA_DEF
 %type <iface> ipa_scope
 
 %type <i> expr bool pxlen4

@@ -73,8 +73,7 @@ void filters_dump_all(void);
 /* Custom route attributes */
 struct custom_attribute {
   resource r;
-  struct f_dynamic_attr *fda;
-  const char *name;
+  struct ea_def *def;
 };
 
 struct custom_attribute *ca_lookup(pool *p, const char *name, int ea_type);

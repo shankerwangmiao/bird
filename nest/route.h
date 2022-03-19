@@ -13,6 +13,7 @@
 #include "lib/bitmap.h"
 #include "lib/resource.h"
 #include "lib/net.h"
+#include "lib/macro.h"
 
 struct ea_list;
 struct protocol;
@@ -440,6 +441,11 @@ struct rte_src {
   unsigned uc;				/* Use count */
 };
 
+struct rte_src *rt_find_source(struct proto *p, u32 id);
+struct rte_src *rt_get_source(struct proto *p, u32 id);
+static inline void rt_lock_source(struct rte_src *src) { src->uc++; }
+static inline void rt_unlock_source(struct rte_src *src) { src->uc--; }
+void rt_prune_sources(void);
 
 typedef struct rta {
   struct rta *next, **pprev;		/* Hash chain */
@@ -512,20 +518,7 @@ typedef struct eattr {
   } u;
 } eattr;
 
-
-#define EA_CODE(proto,id) (((proto) << 8) | (id))
-#define EA_ID(ea) ((ea) & 0xff)
-#define EA_PROTO(ea) ((ea) >> 8)
-#define EA_CUSTOM(id) ((id) | EA_CUSTOM_BIT)
-#define EA_IS_CUSTOM(ea) ((ea) & EA_CUSTOM_BIT)
-#define EA_CUSTOM_ID(ea) ((ea) & ~EA_CUSTOM_BIT)
-
-const char *ea_custom_name(uint ea);
-
-#define EA_GEN_IGP_METRIC EA_CODE(PROTOCOL_NONE, 0)
-
 #define EA_CODE_MASK 0xffff
-#define EA_CUSTOM_BIT 0x8000
 #define EA_ALLOW_UNDEF 0x10000		/* ea_find: allow EAF_TYPE_UNDEF */
 #define EA_BIT(n) ((n) << 24)		/* Used in bitfield accessors */
 #define EA_BIT_GET(ea) ((ea) >> 24)
@@ -575,11 +568,38 @@ typedef struct ea_list {
 #define EALF_BISECT 2			/* Use interval bisection for searching */
 #define EALF_CACHED 4			/* Attributes belonging to cached rta */
 
-struct rte_src *rt_find_source(struct proto *p, u32 id);
-struct rte_src *rt_get_source(struct proto *p, u32 id);
-static inline void rt_lock_source(struct rte_src *src) { src->uc++; }
-static inline void rt_unlock_source(struct rte_src *src) { src->uc--; }
-void rt_prune_sources(void);
+struct ea_def {
+#define EA_DEF_INSIDE \
+  const char *name;			/* Name (both print and filter) */ \
+  struct ea_def *hash_next;		/* Auxiliary pointer for name hash */ \
+  uint type;				/* EAF_ type */ \
+  uint id;				/* Autoassigned ID */ \
+  uint f_type;				/* Filter code type */ \
+  uint bit;				/* Bit to set for bitfields */ \
+  uint readonly:1;			/* This attribute can't be changed by filters */ \
+  uint conf:1;				/* Requested by config */ \
+  void (*format)(const eattr *ea, byte *buf, uint size); \
+
+  EA_DEF_INSIDE;
+};
+
+extern struct ea_def ea_gen_igp_metric;
+
+void ea_register(struct ea_def *def);
+void ea_register_bit(struct ea_def *def);
+
+void ea_unregister(struct ea_def *def);
+
+#define EA_REGISTER_ALL_HELPER(x)	ea_register(x);
+#define EA_REGISTER_ALL(...)		MACRO_FOREACH(EA_REGISTER_ALL_HELPER, __VA_ARGS__)
+
+const struct ea_def *ea_def_find_by_id(uint id);
+const struct ea_def *ea_def_find_by_name(const char *name);
+#define ea_def_find(_arg)	_Generic((_arg), \
+  uint: ea_def_find_by_id, \
+  word: ea_def_find_by_id, \
+  char *: ea_def_find_by_name, \
+  const char *: ea_def_find_by_name)(_arg)
 
 struct ea_walk_state {
   ea_list *eattrs;			/* Ccurrent ea_list, initially set by caller */
@@ -587,9 +607,23 @@ struct ea_walk_state {
   u32 visited[4];			/* Bitfield, limiting max to 128 */
 };
 
-eattr *ea_find(ea_list *, unsigned ea);
+#define ea_find(_l, _arg)	_Generic((_arg), uint: ea_find_by_id, struct ea_def *: ea_find_by_def, char *: ea_find_by_name)(_l, _arg)
+eattr *ea_find_by_id(ea_list *, unsigned ea);
+static inline eattr *ea_find_by_def(ea_list *l, const struct ea_def *def)
+{ return ea_find_by_id(l, def->id); }
+static inline eattr *ea_find_by_name(ea_list *l, const char *name)
+{
+  const struct ea_def *def = ea_def_find_by_name(name);
+  return def ? ea_find_by_def(l, def) : NULL;
+}
+
+#define ea_get_int(_l, _ident, _def)  ({ \
+    const eattr *ea = ea_find((_l), (_ident)); \
+    ASSERT_DIE(!ea || (ea->type & EAF_EMBEDDED)); \
+    (ea ? ea->u.data : (_def)); \
+    })
+
 eattr *ea_walk(struct ea_walk_state *s, uint id, uint max);
-uintptr_t ea_get_int(ea_list *, unsigned ea, uintptr_t def);
 void ea_dump(ea_list *);
 void ea_sort(ea_list *);		/* Sort entries in all sub-lists */
 unsigned ea_scan(ea_list *);		/* How many bytes do we need for merged ea_list */
@@ -615,8 +649,10 @@ struct ea_one_attr_list {
   eattr a;
 };
 
+#define EA_LITERAL(_def, ...)	((eattr) { .id = ((_def)->id), .type = ((_def)->type), .fresh = 1, __VA_ARGS__ })
+
 static inline eattr *
-ea_set_attr(ea_list **to, struct linpool *pool, uint id, uint flags, uint type, uintptr_t val)
+ea_set_attr(ea_list **to, struct linpool *pool, const struct ea_def *def, uint flags, uintptr_t val)
 {
   struct ea_one_attr_list *ea = lp_alloc(pool, sizeof(*ea));
   *ea = (struct ea_one_attr_list) {
@@ -624,12 +660,10 @@ ea_set_attr(ea_list **to, struct linpool *pool, uint id, uint flags, uint type, 
     .l.count = 1,
     .l.next = *to,
 
-    .a.id = id,
-    .a.type = type,
-    .a.flags = flags,
+    .a = EA_LITERAL(def, .flags = flags),
   };
 
-  if (type & EAF_EMBEDDED)
+  if (def->type & EAF_EMBEDDED)
     ea->a.u.data = val;
   else
     ea->a.u.ptr = (struct adata *) val;
@@ -640,14 +674,14 @@ ea_set_attr(ea_list **to, struct linpool *pool, uint id, uint flags, uint type, 
 }
 
 static inline void
-ea_unset_attr(ea_list **to, struct linpool *pool, _Bool local, uint code)
+ea_unset_attr(ea_list **to, struct linpool *pool, _Bool local, const struct ea_def *def)
 {
   struct ea_one_attr_list *ea = lp_alloc(pool, sizeof(*ea));
   *ea = (struct ea_one_attr_list) {
     .l.flags = EALF_SORTED,
     .l.count = 1,
     .l.next = *to,
-    .a.id = code,
+    .a.id = def->id,
     .a.fresh = local,
     .a.originated = local,
     .a.undef = 1,
@@ -657,19 +691,19 @@ ea_unset_attr(ea_list **to, struct linpool *pool, _Bool local, uint code)
 }
 
 static inline void
-ea_set_attr_u32(ea_list **to, struct linpool *pool, uint id, uint flags, uint type, u32 val)
-{ ea_set_attr(to, pool, id, flags, type, (uintptr_t) val); }
+ea_set_attr_u32(ea_list **to, struct linpool *pool, const struct ea_def *def, uint flags, u32 val)
+{ ea_set_attr(to, pool, def, flags, (uintptr_t) val); }
 
 static inline void
-ea_set_attr_ptr(ea_list **to, struct linpool *pool, uint id, uint flags, uint type, struct adata *val)
-{ ea_set_attr(to, pool, id, flags, type, (uintptr_t) val); }
+ea_set_attr_ptr(ea_list **to, struct linpool *pool, const struct ea_def *def, uint flags, struct adata *val)
+{ ea_set_attr(to, pool, def, flags, (uintptr_t) val); }
 
 static inline void
-ea_set_attr_data(ea_list **to, struct linpool *pool, uint id, uint flags, uint type, void *data, uint len)
+ea_set_attr_data(ea_list **to, struct linpool *pool, const struct ea_def *def, uint flags, void *data, uint len)
 {
   struct adata *a = lp_alloc_adata(pool, len);
   memcpy(a->data, data, len);
-  ea_set_attr(to, pool, id, flags, type, (uintptr_t) a);
+  ea_set_attr(to, pool, def, flags, (uintptr_t) a);
 }
 
 

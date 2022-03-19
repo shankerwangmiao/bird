@@ -41,7 +41,7 @@ struct filter *f_new_where(struct f_inst *where)
   return f;
 }
 
-#define CA_KEY(n)	n->name, n->fda.type
+#define CA_KEY(n)	n->def.name, n->def.type
 #define CA_NEXT(n)	n->next
 #define CA_EQ(na,ta,nb,tb)	(!strcmp(na,nb) && (ta == tb))
 #define CA_FN(n,t)	(mem_hash(n, strlen(n)) ^ (t*0xaae99453U))
@@ -49,31 +49,25 @@ struct filter *f_new_where(struct f_inst *where)
 
 struct ca_storage {
   struct ca_storage *next;
-  struct f_dynamic_attr fda;
+  struct ea_def def;
   u32 uc;
   char name[0];
 };
 
 HASH(struct ca_storage) ca_hash;
 
-static struct idm ca_idm;
-static struct ca_storage **ca_storage;
-static uint ca_storage_max;
-
 static void
 ca_free(resource *r)
 {
   struct custom_attribute *ca = (void *) r;
-  struct ca_storage *cas = HASH_FIND(ca_hash, CA, ca->name, ca->fda->type);
+  struct ca_storage *cas = HASH_FIND(ca_hash, CA, ca->def->name, ca->def->type);
   ASSERT(cas);
 
-  ca->name = NULL;
-  ca->fda = NULL;
+  ca->def = NULL;
+
   if (!--cas->uc) {
-    uint id = EA_CUSTOM_ID(cas->fda.ea_code);
-    idm_free(&ca_idm, id);
+    ea_unregister(&cas->def);
     HASH_REMOVE(ca_hash, CA, cas);
-    ca_storage[id] = NULL;
     mb_free(cas);
   }
 }
@@ -83,7 +77,7 @@ ca_dump(resource *r)
 {
   struct custom_attribute *ca = (void *) r;
   debug("name \"%s\" id 0x%04x ea_type 0x%02x f_type 0x%02x\n",
-      ca->name, ca->fda->ea_code, ca->fda->type, ca->fda->f_type);
+      ca->def->name, ca->def->id, ca->def->type, ca->def->f_type);
 }
 
 static struct resclass ca_class = {
@@ -98,7 +92,7 @@ static struct resclass ca_class = {
 struct custom_attribute *
 ca_lookup(pool *p, const char *name, int f_type)
 {
-  int ea_type;
+  uint ea_type;
 
   switch (f_type) {
     case T_INT:
@@ -128,12 +122,7 @@ ca_lookup(pool *p, const char *name, int f_type)
 
   static int inited = 0;
   if (!inited) {
-    idm_init(&ca_idm, &root_pool, 8);
     HASH_INIT(ca_hash, &root_pool, CA_ORDER);
-
-    ca_storage_max = 256;
-    ca_storage = mb_allocz(&root_pool, sizeof(struct ca_storage *) * ca_storage_max);
-
     inited++;
   }
 
@@ -141,43 +130,25 @@ ca_lookup(pool *p, const char *name, int f_type)
   if (cas) {
     cas->uc++;
   } else {
-
-    uint id = idm_alloc(&ca_idm);
-
-    if (id >= EA_CUSTOM_BIT)
-      cf_error("Too many custom attributes.");
-
-    if (id >= ca_storage_max) {
-      ca_storage_max *= 2;
-      ca_storage = mb_realloc(&root_pool, ca_storage, sizeof(struct ca_storage *) * ca_storage_max * 2);
-    }
-
     cas = mb_allocz(&root_pool, sizeof(struct ca_storage) + strlen(name) + 1);
-    cas->fda = f_new_dynamic_attr(ea_type, f_type, EA_CUSTOM(id));
-    cas->uc = 1;
+    *cas = (struct ca_storage) {
+      .def = {
+	.name = cas->name,
+	.type = ea_type,
+	.f_type = f_type,
+	.conf = 1,
+      },
+      .uc = 1,
+    };
 
     strcpy(cas->name, name);
-    ca_storage[id] = cas;
-
     HASH_INSERT(ca_hash, CA, cas);
+
+    ea_register(&cas->def);
   }
 
   struct custom_attribute *ca = ralloc(p, &ca_class);
-  ca->fda = &(cas->fda);
-  ca->name = cas->name;
+  ca->def = &(cas->def);
+
   return ca;
 }
-
-const char *
-ea_custom_name(uint ea)
-{
-  uint id = EA_CUSTOM_ID(ea);
-  if (id >= ca_storage_max)
-    return NULL;
-
-  if (!ca_storage[id])
-    return NULL;
-
-  return ca_storage[id]->name;
-}
-

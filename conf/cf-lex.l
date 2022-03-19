@@ -73,6 +73,12 @@ static uint cf_hash(const byte *c);
 #define KW_FN(k)		cf_hash(k)
 #define KW_ORDER		8 /* Fixed */
 
+#define EA_NAME_KEY(n)		n->name
+#define EA_NAME_NEXT(n)		n->hash_next
+#define EA_NAME_EQ(a,b)		!strcmp(a,b)
+#define EA_NAME_FN(k)		cf_hash(k)
+#define EA_NAME_ORDER		8 /* Fixed */
+
 #define SYM_KEY(n)		n->name, n->scope->active
 #define SYM_NEXT(n)		n->next
 #define SYM_EQ(a,s1,b,s2)	!strcmp(a,b) && s1 == s2
@@ -86,6 +92,7 @@ static uint cf_hash(const byte *c);
 HASH_DEFINE_REHASH_FN(SYM, struct symbol)
 
 HASH(struct keyword) kw_hash;
+HASH(struct ea_def) ea_name_hash;
 
 
 struct sym_scope *conf_this_scope;
@@ -692,6 +699,14 @@ cf_lex_symbol(const char *data)
   if (sym->class != SYM_VOID)
     return CF_SYM_KNOWN;
 
+  /* Is it an attribute name? */
+  struct ea_def *def = HASH_FIND(ea_name_hash, EA_NAME, data);
+  if (def)
+  {
+    cf_lval.ea_def = def;
+    return EA_DEF;
+  }
+
   /* Is it a keyword? */
   struct keyword *k = HASH_FIND(kw_hash, KW, data);
   if (k)
@@ -718,6 +733,33 @@ cf_lex_init_kh(void)
   struct keyword *k;
   for (k=keyword_list; k->name; k++)
     HASH_INSERT(kw_hash, KW, k);
+}
+
+static inline void
+ea_def_init(void)
+{
+  if (!ea_name_hash.data)
+    HASH_INIT(ea_name_hash, &root_pool, EA_NAME_ORDER);
+}
+
+void
+ea_lex_register(struct ea_def *def)
+{
+  ea_def_init();
+  HASH_INSERT(ea_name_hash, EA_NAME, def);
+}
+
+void
+ea_lex_unregister(struct ea_def *def)
+{
+  HASH_REMOVE(ea_name_hash, EA_NAME, def);
+}
+
+const struct ea_def *
+ea_def_find_by_name(const char *name)
+{
+  ea_def_init();
+  return HASH_FIND(ea_name_hash, EA_NAME, name);
 }
 
 /**

@@ -652,31 +652,31 @@
     DYNAMIC_ATTR;
     ACCESS_RTE;
     ACCESS_EATTRS;
-    RESULT_TYPE(da.f_type);
+    RESULT_TYPE(da->f_type);
     {
-      eattr *e = ea_find(*fs->eattrs, da.ea_code);
+      eattr *e = ea_find(*fs->eattrs, da->id);
 
       if (!e) {
 	/* A special case: undefined as_path looks like empty as_path */
-	if (da.type == EAF_TYPE_AS_PATH) {
+	if (da->type == EAF_TYPE_AS_PATH) {
 	  RESULT_(T_PATH, ad, &null_adata);
 	  break;
 	}
 
 	/* The same special case for int_set */
-	if (da.type == EAF_TYPE_INT_SET) {
+	if (da->type == EAF_TYPE_INT_SET) {
 	  RESULT_(T_CLIST, ad, &null_adata);
 	  break;
 	}
 
 	/* The same special case for ec_set */
-	if (da.type == EAF_TYPE_EC_SET) {
+	if (da->type == EAF_TYPE_EC_SET) {
 	  RESULT_(T_ECLIST, ad, &null_adata);
 	  break;
 	}
 
 	/* The same special case for lc_set */
-	if (da.type == EAF_TYPE_LC_SET) {
+	if (da->type == EAF_TYPE_LC_SET) {
 	  RESULT_(T_LCLIST, ad, &null_adata);
 	  break;
 	}
@@ -688,7 +688,7 @@
 
       switch (e->type & EAF_TYPE_MASK) {
       case EAF_TYPE_INT:
-	RESULT_(da.f_type, i, e->u.data);
+	RESULT_(da->f_type, i, e->u.data);
 	break;
       case EAF_TYPE_ROUTER_ID:
 	RESULT_(T_QUAD, i, e->u.data);
@@ -703,7 +703,7 @@
 	RESULT_(T_PATH, ad, e->u.ptr);
 	break;
       case EAF_TYPE_BITFIELD:
-	RESULT_(T_BOOL, i, !!(e->u.data & (1u << da.bit)));
+	RESULT_(T_BOOL, i, !!(e->u.data & (1u << da->bit)));
 	break;
       case EAF_TYPE_INT_SET:
 	RESULT_(T_CLIST, ad, e->u.ptr);
@@ -725,20 +725,20 @@
     ACCESS_EATTRS;
     ARG_ANY(1);
     DYNAMIC_ATTR;
-    ARG_TYPE(1, da.f_type);
+    ARG_TYPE(1, da->f_type);
     {
       struct ea_list *l = lp_alloc(fs->pool, sizeof(struct ea_list) + sizeof(eattr));
 
       l->next = NULL;
       l->flags = EALF_SORTED;
       l->count = 1;
-      l->attrs[0].id = da.ea_code;
+      l->attrs[0].id = da->id;
       l->attrs[0].flags = 0;
-      l->attrs[0].type = da.type;
+      l->attrs[0].type = da->type;
       l->attrs[0].originated = 1;
       l->attrs[0].fresh = 1;
 
-      switch (da.type) {
+      switch (da->type) {
       case EAF_TYPE_INT:
       case EAF_TYPE_ROUTER_ID:
 	l->attrs[0].u.data = v1.val.i;
@@ -766,13 +766,13 @@
       case EAF_TYPE_BITFIELD:
 	{
 	  /* First, we have to find the old value */
-	  eattr *e = ea_find(*fs->eattrs, da.ea_code);
+	  eattr *e = ea_find(*fs->eattrs, da->id);
 	  u32 data = e ? e->u.data : 0;
 
 	  if (v1.val.i)
-	    l->attrs[0].u.data = data | (1u << da.bit);
+	    l->attrs[0].u.data = data | (1u << da->bit);
 	  else
-	    l->attrs[0].u.data = data & ~(1u << da.bit);
+	    l->attrs[0].u.data = data & ~(1u << da->bit);
 	}
 	break;
 
@@ -792,7 +792,7 @@
     ACCESS_EATTRS;
 
     f_rta_cow(fs);
-    ea_unset_attr(fs->eattrs, fs->pool, 1, da.ea_code);
+    ea_unset_attr(fs->eattrs, fs->pool, 1, da);
   }
 
   INST(FI_LENGTH, 1, 1) {	/* Get length of */
