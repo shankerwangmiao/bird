@@ -540,6 +540,7 @@ const char *ea_custom_name(uint ea);
 #define EAF_TYPE_PTR 0x0d		/* Pointer to an object */
 #define EAF_TYPE_EC_SET 0x0e		/* Set of pairs of u32's - ext. community list */
 #define EAF_TYPE_LC_SET 0x12		/* Set of triplets of u32's - large community list */
+#define EAF_TYPE_BGP_NEXT_HOP 0x16	/* BGP Next Hop is either one or two IP addresses */
 #define EAF_EMBEDDED 0x01		/* Data stored in eattr.u.data (part of type spec) */
 #define EAF_VAR_LENGTH 0x02		/* Attribute length is variable (part of type spec) */
 

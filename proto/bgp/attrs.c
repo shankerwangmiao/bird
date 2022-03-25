@@ -1003,7 +1003,7 @@ static const struct bgp_attr_desc bgp_attr_table[] = {
   },
   [BA_NEXT_HOP] = {
     .name = "next_hop",
-    .type = EAF_TYPE_IP_ADDRESS,
+    .type = EAF_TYPE_BGP_NEXT_HOP,
     .flags = BAF_TRANSITIVE,
     .encode = bgp_encode_next_hop,
     .decode = bgp_decode_next_hop,

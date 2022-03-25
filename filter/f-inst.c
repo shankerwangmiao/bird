@@ -707,6 +707,7 @@
 	RESULT_(T_ENUM_EMPTY, i, 0);
 	break;
       case EAF_TYPE_IP_ADDRESS:
+      case EAF_TYPE_BGP_NEXT_HOP:
 	RESULT_(T_IP, ip, *((ip_addr *) e->u.ptr->data));
 	break;
       case EAF_TYPE_AS_PATH:
@@ -756,6 +757,7 @@
 	break;
 
       case EAF_TYPE_IP_ADDRESS:;
+      case EAF_TYPE_BGP_NEXT_HOP:;
 	int len = sizeof(ip_addr);
 	struct adata *ad = lp_alloc(fs->pool, sizeof(struct adata) + len);
 	ad->length = len;

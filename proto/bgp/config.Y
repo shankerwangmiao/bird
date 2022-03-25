@@ -322,7 +322,7 @@ dynamic_attr: BGP_ORIGIN
 dynamic_attr: BGP_PATH
 	{ $$ = f_new_dynamic_attr(EAF_TYPE_AS_PATH, T_PATH, EA_CODE(PROTOCOL_BGP, BA_AS_PATH)); } ;
 dynamic_attr: BGP_NEXT_HOP
-	{ $$ = f_new_dynamic_attr(EAF_TYPE_IP_ADDRESS, T_IP, EA_CODE(PROTOCOL_BGP, BA_NEXT_HOP)); } ;
+	{ $$ = f_new_dynamic_attr(EAF_TYPE_BGP_NEXT_HOP, T_IP, EA_CODE(PROTOCOL_BGP, BA_NEXT_HOP)); } ;
 dynamic_attr: BGP_MED
 	{ $$ = f_new_dynamic_attr(EAF_TYPE_INT, T_INT, EA_CODE(PROTOCOL_BGP, BA_MULTI_EXIT_DISC)); } ;
 dynamic_attr: BGP_LOCAL_PREF
