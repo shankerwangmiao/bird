@@ -199,7 +199,7 @@ net_route_vpn6_trie(rtable *t, const net_addr_vpn6 *n0)
   return NULL;
 }
 
-static inline void *
+static inline net *
 net_route_ip6_sadr_trie(rtable *t, const net_addr_ip6_sadr *n0)
 {
   TRIE_WALK_TO_ROOT_IP6(t->trie, (const net_addr_ip6 *) n0, px)
@@ -233,70 +233,6 @@ net_route_ip6_sadr_trie(rtable *t, const net_addr_ip6_sadr *n0)
 }
 
 static inline net *
-net_route_ip4_fib(rtable *t, const net_addr_ip4 *n0)
-{
-  net_addr_ip4 n;
-  net_copy_ip4(&n, n0);
-
-  net *r;
-  while (r = net_find_valid(t, (net_addr *) &n), (!r) && (n.pxlen > 0))
-  {
-    n.pxlen--;
-    ip4_clrbit(&n.prefix, n.pxlen);
-  }
-
-  return r;
-}
-
-static inline net *
-net_route_vpn4_fib(rtable *t, const net_addr_vpn4 *n0)
-{
-  net_addr_vpn4 n;
-  net_copy_vpn4(&n, n0);
-
-  net *r;
-  while (r = net_find_valid(t, (net_addr *) &n), (!r) && (n.pxlen > 0))
-  {
-    n.pxlen--;
-    ip4_clrbit(&n.prefix, n.pxlen);
-  }
-
-  return r;
-}
-
-static inline net *
-net_route_ip6_fib(rtable *t, const net_addr_ip6 *n0)
-{
-  net_addr_ip6 n;
-  net_copy_ip6(&n, n0);
-
-  net *r;
-  while (r = net_find_valid(t, (net_addr *) &n), (!r) && (n.pxlen > 0))
-  {
-    n.pxlen--;
-    ip6_clrbit(&n.prefix, n.pxlen);
-  }
-
-  return r;
-}
-
-static inline net *
-net_route_vpn6_fib(rtable *t, const net_addr_vpn6 *n0)
-{
-  net_addr_vpn6 n;
-  net_copy_vpn6(&n, n0);
-
-  net *r;
-  while (r = net_find_valid(t, (net_addr *) &n), (!r) && (n.pxlen > 0))
-  {
-    n.pxlen--;
-    ip6_clrbit(&n.prefix, n.pxlen);
-  }
-
-  return r;
-}
-
-static inline void *
 net_route_ip6_sadr_fib(rtable *t, const net_addr_ip6_sadr *n0)
 {
   net_addr_ip6_sadr n;
@@ -341,40 +277,44 @@ net_route(rtable *tab, const net_addr *n)
 {
   ASSERT(tab->addr_type == n->type);
 
-  switch (n->type)
-  {
-  case NET_IP4:
-    if (tab->trie)
-      return net_route_ip4_trie(tab, (net_addr_ip4 *) n);
-    else
-      return net_route_ip4_fib (tab, (net_addr_ip4 *) n);
+  if (tab->trie)
+    switch (n->type)
+    {
+      case NET_IP4:	return net_route_ip4_trie(tab, (net_addr_ip4 *) n);
+      case NET_VPN4:	return net_route_vpn4_trie(tab, (net_addr_vpn4 *) n);
+      case NET_IP6:	return net_route_ip6_trie(tab, (net_addr_ip6 *) n);
+      case NET_VPN6:	return net_route_vpn6_trie(tab, (net_addr_vpn6 *) n);
+      case NET_IP6_SADR:return net_route_ip6_sadr_trie(tab, (net_addr_ip6_sadr *) n);
+      default:		return NULL;
+    }
+  else
+    switch (n->type)
+    {
+      case NET_IP4:
+      case NET_VPN4:
+	FIB_WALK_TO_ROOT(&tab->fib, (net_addr_ip4 *) n, ip4)
+	{
+	  net *nn = SKIP_BACK(net, n, FIB_WALK_NODE);
+	  if (nn && rte_is_valid(nn->routes))
+	    return nn;
+	}
+	return NULL;
 
-  case NET_VPN4:
-    if (tab->trie)
-      return net_route_vpn4_trie(tab, (net_addr_vpn4 *) n);
-    else
-      return net_route_vpn4_fib (tab, (net_addr_vpn4 *) n);
+      case NET_IP6:
+      case NET_VPN6:
+	FIB_WALK_TO_ROOT(&tab->fib, (net_addr_ip6 *) n, ip6)
+	{
+	  net *nn = SKIP_BACK(net, n, FIB_WALK_NODE);
+	  if (nn && rte_is_valid(nn->routes))
+	    return nn;
+	}
+	return NULL;
 
-  case NET_IP6:
-    if (tab->trie)
-      return net_route_ip6_trie(tab, (net_addr_ip6 *) n);
-    else
-      return net_route_ip6_fib (tab, (net_addr_ip6 *) n);
+      case NET_IP6_SADR:
+	return net_route_ip6_sadr_fib (tab, (net_addr_ip6_sadr *) n);
 
-  case NET_VPN6:
-    if (tab->trie)
-      return net_route_vpn6_trie(tab, (net_addr_vpn6 *) n);
-    else
-      return net_route_vpn6_fib (tab, (net_addr_vpn6 *) n);
-
-  case NET_IP6_SADR:
-    if (tab->trie)
-      return net_route_ip6_sadr_trie(tab, (net_addr_ip6_sadr *) n);
-    else
-      return net_route_ip6_sadr_fib (tab, (net_addr_ip6_sadr *) n);
-
-  default:
-    return NULL;
+      default:
+	return NULL;
   }
 }
 
