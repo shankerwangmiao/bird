@@ -73,7 +73,52 @@ void fib_init(struct fib *f, pool *p, uint addr_type, uint node_size, uint node_
 struct fib_node *fib_find(struct fib *, const net_addr *);	/* Find or return NULL if doesn't exist */
 struct fib_node *fib_get_chain(struct fib *f, const net_addr *a); /* Find first node in linked list from hash table */
 struct fib_node *fib_get(struct fib *, const net_addr *);	/* Find or create new if nonexistent */
-struct fib_node *fib_route(struct fib *, const net_addr *); /* Longest-match routing lookup */
+
+/* Longest-match routing lookup */
+struct fib_walk_root_ip4 {
+  struct fib_node *node;
+  net_addr_ip4 addr;
+};
+
+struct fib_walk_root_ip6 {
+  struct fib_node *node;
+  net_addr_ip6 addr;
+};
+
+#define FIB_WALK_TO_ROOT(f, start, variant)	\
+  for (struct fib_walk_root_##variant _fwri = { \
+      .addr = *(start), \
+      .node = fib_find((f), ((net_addr *) (start))) \
+      }; _fwri.addr.pxlen > 0; ) \
+      if (variant##_clrbit(&_fwri.addr.prefix, --_fwri.addr.pxlen), \
+	  !(_fwri.node = fib_find((f), ((net_addr *) (&_fwri.addr))))) \
+	continue; \
+      else
+
+#define FIB_WALK_NODE _fwri.node
+
+static inline struct fib_node *
+fib_route(struct fib *fib, const net_addr *n)
+{
+  switch (n->type)
+  {
+    case NET_IP4:
+    case NET_VPN4:
+      FIB_WALK_TO_ROOT(fib, (net_addr_ip4 *) n, ip4)
+	return FIB_WALK_NODE;
+      return NULL;
+
+    case NET_IP6:
+    case NET_VPN6:
+      FIB_WALK_TO_ROOT(fib, (net_addr_ip6 *) n, ip6)
+	return FIB_WALK_NODE;
+      return NULL;
+
+    default:
+      return NULL;
+  }
+}
+
 void fib_delete(struct fib *, struct fib_node *);	/* Remove fib entry */
 void fib_free(struct fib *);		/* Destroy the fib */
 void fib_check(struct fib *);		/* Consistency check for debugging */
