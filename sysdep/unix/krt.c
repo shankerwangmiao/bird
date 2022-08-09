@@ -409,7 +409,7 @@ again:
 	    krt_learn_announce_delete(p, n);
 
 	  FIB_ITERATE_PUT(&fit);
-	  fib_delete(fib, n);
+	  fib_delete(fib, &n->n);
 	  goto again;
 	}
 

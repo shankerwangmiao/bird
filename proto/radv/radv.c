@@ -464,7 +464,7 @@ radv_rt_notify(struct proto *P, struct channel *ch UNUSED, net *n, rte *new, rte
       lifetime_set = 1;
     }
 
-    rt = fib_get(&p->routes, n->n.addr);
+    rt = FIB_GET(&p->routes, n->n.addr, struct radv_route, n);
 
     /* Ignore update if nothing changed */
     if (rt->valid &&
@@ -487,7 +487,7 @@ radv_rt_notify(struct proto *P, struct channel *ch UNUSED, net *n, rte *new, rte
   else
   {
     /* Withdraw */
-    rt = fib_find(&p->routes, n->n.addr);
+    rt = FIB_FIND(&p->routes, n->n.addr, struct radv_route, n);
 
     if (!rt || !rt->valid)
       return;
@@ -534,7 +534,7 @@ again:
       if (expires <= now)
       {
 	FIB_ITERATE_PUT(&fit);
-	fib_delete(&p->routes, rt);
+	fib_delete(&p->routes, &rt->n);
 	goto again;
       }
       else

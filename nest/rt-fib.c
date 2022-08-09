@@ -215,12 +215,13 @@ fib_rehash(struct fib *f, int step)
 
 #define FIB_HASH(f,a,t) (net_hash_##t(CAST(t) a) >> f->hash_shift)
 
+#undef FIB_FIND
 #define FIB_FIND(f,a,t)							\
   ({									\
     struct fib_node *e = f->hash_table[FIB_HASH(f, a, t)];		\
     while (e && !net_equal_##t(CAST(t) e->addr, CAST(t) a))		\
       e = e->next;							\
-    fib_node_to_user(f, e);						\
+    e;									\
   })
 
 #define FIB_INSERT(f,a,e,t)						\
@@ -245,13 +246,11 @@ fib_hash(struct fib *f, const net_addr *a)
   return net_hash(a) >> f->hash_shift;
 }
 
-void *
+struct fib_node *
 fib_get_chain(struct fib *f, const net_addr *a)
 {
   ASSERT(f->addr_type == a->type);
-
-  struct fib_node *e = f->hash_table[fib_hash(f, a)];
-  return e;
+  return f->hash_table[fib_hash(f, a)];
 }
 
 /**
@@ -262,7 +261,7 @@ fib_get_chain(struct fib *f, const net_addr *a)
  * Search for a FIB node corresponding to the given prefix, return
  * a pointer to it or %NULL if no such node exists.
  */
-void *
+struct fib_node *
 fib_find(struct fib *f, const net_addr *a)
 {
   ASSERT(f->addr_type == a->type);
@@ -305,6 +304,35 @@ fib_insert(struct fib *f, const net_addr *a, struct fib_node *e)
 }
 
 
+static struct fib_node *
+fib_alloc_node(struct fib *f, const net_addr *a)
+{
+  void *b;
+
+  if (f->fib_slab)
+    b = sl_alloc(f->fib_slab);
+  else
+    b = mb_alloc(f->fib_pool, f->node_size + a->length);
+
+  memset(b, 0, f->node_offset);
+
+  struct fib_node *n = b + f->node_offset;
+  n->readers = NULL;
+
+  return n;
+}
+
+static void
+fib_free_node(struct fib *f, struct fib_node *n)
+{
+  void *E = (void *) n - f->node_offset;
+
+  if (f->fib_slab)
+    sl_free(E);
+  else
+    mb_free(E);
+}
+
 /**
  * fib_get - find or create a FIB node
  * @f: FIB to work with
@@ -313,36 +341,31 @@ fib_insert(struct fib *f, const net_addr *a, struct fib_node *e)
  * Search for a FIB node corresponding to the given prefix and
  * return a pointer to it. If no such node exists, create it.
  */
-void *
+struct fib_node *
 fib_get(struct fib *f, const net_addr *a)
 {
-  void *b = fib_find(f, a);
-  if (b)
-    return b;
+  struct fib_node *e = fib_find(f, a);
+  if (e)
+    return e;
 
-  if (f->fib_slab)
-    b = sl_alloc(f->fib_slab);
-  else
-    b = mb_alloc(f->fib_pool, f->node_size + a->length);
-
-  struct fib_node *e = fib_user_to_node(f, b);
-  e->readers = NULL;
+  e = fib_alloc_node(f, a);
   fib_insert(f, a, e);
 
-  memset(b, 0, f->node_offset);
+  DBG("%p = fib_get(%p, %N); hash = %x\n", e, f, a, fib_hash(f, a));
+
   if (f->init)
-    f->init(f, b);
+    f->init(f, e);
 
   if (f->entries++ > f->entries_max)
     fib_rehash(f, HASH_HI_STEP);
 
-  return b;
+  return e;
 }
 
-static inline void *
+static inline struct fib_node *
 fib_route_ip4(struct fib *f, net_addr_ip4 *n)
 {
-  void *r;
+  struct fib_node *r;
 
   while (!(r = fib_find(f, (net_addr *) n)) && (n->pxlen > 0))
   {
@@ -353,10 +376,10 @@ fib_route_ip4(struct fib *f, net_addr_ip4 *n)
   return r;
 }
 
-static inline void *
+static inline struct fib_node *
 fib_route_ip6(struct fib *f, net_addr_ip6 *n)
 {
-  void *r;
+  struct fib_node *r;
 
   while (!(r = fib_find(f, (net_addr *) n)) && (n->pxlen > 0))
   {
@@ -376,7 +399,7 @@ fib_route_ip6(struct fib *f, net_addr_ip6 *n)
  * network, that is a node which a CIDR router would use for routing
  * that network.
  */
-void *
+struct fib_node *
 fib_route(struct fib *f, const net_addr *n)
 {
   ASSERT(f->addr_type == n->type);
@@ -448,12 +471,13 @@ fib_merge_readers(struct fib_iterator *i, struct fib_node *to)
  * them to the next node in the canonical reading order.
  */
 void
-fib_delete(struct fib *f, void *E)
+fib_delete(struct fib *f, struct fib_node *e)
 {
-  struct fib_node *e = fib_user_to_node(f, E);
   uint h = fib_hash(f, e->addr);
   struct fib_node **ee = f->hash_table + h;
   struct fib_iterator *it;
+
+  DBG("fib_delete(%p, %p); net = %N\n", f, e, e->addr);
 
   while (*ee)
     {
@@ -474,10 +498,7 @@ fib_delete(struct fib *f, void *E)
 	      fib_merge_readers(it, l);
 	    }
 
-	  if (f->fib_slab)
-	    sl_free(E);
-	  else
-	    mb_free(E);
+	  fib_free_node(f, e);
 
 	  if (f->entries-- < f->entries_min)
 	    fib_rehash(f, -HASH_LO_STEP);

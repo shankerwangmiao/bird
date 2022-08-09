@@ -16,7 +16,8 @@
 struct align_probe { char x; long int y; };
 
 #define OFFSETOF(s, i) ((size_t) &((s *)0)->i)
-#define SKIP_BACK(s, i, p) ((s *)((char *)p - OFFSETOF(s, i)))
+#define SKIP_BACK(s, i, p) ({ s *_ptr = ((s *)((char *)p - OFFSETOF(s, i))); UNUSED int _ = (&_ptr->i == p); _ptr; })
+#define SKIP_BACK_OR_NULL(s, i, p) ({ typeof(p) _in = (p); _in ? SKIP_BACK(s, i, _in) : NULL; })
 #define BIRD_ALIGN(s, a) (((s)+a-1)&~(a-1))
 #define CPU_STRUCT_ALIGN (sizeof(struct align_probe))
 

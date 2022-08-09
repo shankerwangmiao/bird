@@ -63,9 +63,9 @@ static inline void babel_iface_kick_timer(struct babel_iface *ifa);
  */
 
 static void
-babel_init_entry(struct fib *f UNUSED, void *E)
+babel_init_entry(struct fib *f UNUSED, struct fib_node *n)
 {
-  struct babel_entry *e = E;
+  struct babel_entry *e = SKIP_BACK(struct babel_entry, n, n);
 
   e->updated = current_time();
   init_list(&e->requests);
@@ -77,14 +77,14 @@ static inline struct babel_entry *
 babel_find_entry(struct babel_proto *p, const net_addr *n)
 {
   struct fib *rtable = (n->type == NET_IP4) ? &p->ip4_rtable : &p->ip6_rtable;
-  return fib_find(rtable, n);
+  return FIB_FIND(rtable, n, struct babel_entry, n);
 }
 
 static struct babel_entry *
 babel_get_entry(struct babel_proto *p, const net_addr *n)
 {
   struct fib *rtable = (n->type == NET_IP4) ? &p->ip4_rtable : &p->ip6_rtable;
-  struct babel_entry *e = fib_get(rtable, n);
+  struct babel_entry *e = FIB_GET(rtable, n, struct babel_entry, n);
   return e;
 }
 
@@ -274,7 +274,7 @@ loop:
     if (!e->valid && EMPTY_LIST(e->routes) && EMPTY_LIST(e->sources) && EMPTY_LIST(e->requests))
     {
       FIB_ITERATE_PUT(&fit);
-      fib_delete(rtable, e);
+      fib_delete(rtable, &e->n);
       goto loop;
     }
   }

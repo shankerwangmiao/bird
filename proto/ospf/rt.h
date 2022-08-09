@@ -94,6 +94,10 @@ static inline int rt_is_nssa(ort *nf)
 { return nf->n.options & ORTA_NSSA; }
 
 
+#define ort_fib_get(fib, addr)	FIB_GET((fib), (addr), ort, fn)
+#define ort_fib_find(fib, addr)	FIB_FIND((fib), (addr), ort, fn)
+
+
 /*
  * Invariants for structs top_hash_entry (nodes of LSA db)
  * enforced by SPF calculation for final nodes (color == INSPF):

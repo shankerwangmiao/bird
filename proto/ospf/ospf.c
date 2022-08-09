@@ -128,13 +128,13 @@ add_area_nets(struct ospf_area *oa, struct ospf_area_config *ac)
 
   WALK_LIST(anc, ac->net_list)
   {
-    an = fib_get(&oa->net_fib, &anc->prefix);
+    an = FIB_GET(&oa->net_fib, &anc->prefix, struct area_net, fn);
     an->hidden = anc->hidden;
   }
 
   WALK_LIST(anc, ac->enet_list)
   {
-    an = fib_get(&oa->enet_fib, &anc->prefix);
+    an = FIB_GET(&oa->enet_fib, &anc->prefix, struct area_net, fn);
     an->hidden = anc->hidden;
     an->tag = anc->tag;
   }
@@ -529,7 +529,7 @@ ospf_shutdown(struct proto *P)
   }
 
   /* Cleanup locked rta entries */
-  FIB_WALK(&p->rtf, ort, nf)
+  FIB_WALK2(&p->rtf, ort, fn, nf)
   {
     rta_free(nf->old_rta);
   }
@@ -851,7 +851,7 @@ ospf_sh(struct proto *P)
     cli_msg(-1014, "\t\tNumber of adjacent neighbors:\t%u", adjno);
 
     firstfib = 1;
-    FIB_WALK(&oa->net_fib, struct area_net, anet)
+    FIB_WALK2(&oa->net_fib, struct area_net, fn, anet)
     {
       if(firstfib)
       {
@@ -864,7 +864,7 @@ ospf_sh(struct proto *P)
     FIB_WALK_END;
 
     firstfib = 1;
-    FIB_WALK(&oa->enet_fib, struct area_net, anet)
+    FIB_WALK2(&oa->enet_fib, struct area_net, fn, anet)
     {
       if(firstfib)
       {

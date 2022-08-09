@@ -128,16 +128,15 @@ static void rt_kick_prune_timer(rtable *tab);
 
 
 static void
-net_init_with_trie(struct fib *f, void *N)
+net_init_with_trie(struct fib *f, struct fib_node *n)
 {
   rtable *tab = SKIP_BACK(rtable, fib, f);
-  net *n = N;
 
   if (tab->trie)
-    trie_add_prefix(tab->trie, n->n.addr, n->n.addr->pxlen, n->n.addr->pxlen);
+    trie_add_prefix(tab->trie, n->addr, n->addr->pxlen, n->addr->pxlen);
 
   if (tab->trie_new)
-    trie_add_prefix(tab->trie_new, n->n.addr, n->n.addr->pxlen, n->n.addr->pxlen);
+    trie_add_prefix(tab->trie_new, n->addr, n->addr->pxlen, n->addr->pxlen);
 }
 
 static inline net *
@@ -220,7 +219,7 @@ net_route_ip6_sadr_trie(rtable *t, const net_addr_ip6_sadr *n0)
 	  net_in_net_src_ip6_sadr(&n, a) &&
 	  (a->src_pxlen >= best_pxlen))
       {
-	best = fib_node_to_user(&t->fib, fn);
+	best = SKIP_BACK(net, n, fn);
 	best_pxlen = a->src_pxlen;
       }
     }
@@ -319,7 +318,7 @@ net_route_ip6_sadr_fib(rtable *t, const net_addr_ip6_sadr *n0)
 	  net_in_net_src_ip6_sadr(&n, a) &&
 	  (a->src_pxlen >= best_pxlen))
       {
-	best = fib_node_to_user(&t->fib, fn);
+	best = SKIP_BACK(net, n, fn);
 	best_pxlen = a->src_pxlen;
       }
     }
@@ -393,7 +392,7 @@ net_roa_check_ip4_trie(rtable *tab, const net_addr_ip4 *px, u32 asn)
     for (fn = fib_get_chain(&tab->fib, (net_addr *) &roa0); fn; fn = fn->next)
     {
       net_addr_roa4 *roa = (void *) fn->addr;
-      net *r = fib_node_to_user(&tab->fib, fn);
+      net *r = SKIP_BACK(net, n, fn);
 
       if (net_equal_prefix_roa4(roa, &roa0) && rte_is_valid(r->routes))
       {
@@ -420,7 +419,7 @@ net_roa_check_ip4_fib(rtable *tab, const net_addr_ip4 *px, u32 asn)
     for (fn = fib_get_chain(&tab->fib, (net_addr *) &n); fn; fn = fn->next)
     {
       net_addr_roa4 *roa = (void *) fn->addr;
-      net *r = fib_node_to_user(&tab->fib, fn);
+      net *r = SKIP_BACK(net, n, fn);
 
       if (net_equal_prefix_roa4(roa, &n) && rte_is_valid(r->routes))
       {
@@ -453,7 +452,7 @@ net_roa_check_ip6_trie(rtable *tab, const net_addr_ip6 *px, u32 asn)
     for (fn = fib_get_chain(&tab->fib, (net_addr *) &roa0); fn; fn = fn->next)
     {
       net_addr_roa6 *roa = (void *) fn->addr;
-      net *r = fib_node_to_user(&tab->fib, fn);
+      net *r = SKIP_BACK(net, n, fn);
 
       if (net_equal_prefix_roa6(roa, &roa0) && rte_is_valid(r->routes))
       {
@@ -480,7 +479,7 @@ net_roa_check_ip6_fib(rtable *tab, const net_addr_ip6 *px, u32 asn)
     for (fn = fib_get_chain(&tab->fib, (net_addr *) &n); fn; fn = fn->next)
     {
       net_addr_roa6 *roa = (void *) fn->addr;
-      net *r = fib_node_to_user(&tab->fib, fn);
+      net *r = SKIP_BACK(net, n, fn);
 
       if (net_equal_prefix_roa6(roa, &n) && rte_is_valid(r->routes))
       {
@@ -2255,7 +2254,7 @@ again:
       if (!n->routes)		/* Orphaned FIB entry */
 	{
 	  FIB_ITERATE_PUT(fit);
-	  fib_delete(&tab->fib, n);
+	  fib_delete(&tab->fib, &n->n);
 	  goto again;
 	}
 
@@ -3103,7 +3102,7 @@ rte_update_in(struct channel *c, const net_addr *n, rte *new, struct rte_src *sr
       goto drop_withdraw;
 
     if (!net->routes)
-      fib_delete(&tab->fib, net);
+      fib_delete(&tab->fib, &net->n);
 
     return 1;
   }
@@ -3141,7 +3140,7 @@ drop_update:
   rte_free(new);
 
   if (!net->routes)
-    fib_delete(&tab->fib, net);
+    fib_delete(&tab->fib, &net->n);
 
   return 0;
 
@@ -3236,7 +3235,7 @@ again:
     if (all || !n->routes)
     {
       FIB_ITERATE_PUT(&fit);
-      fib_delete(&t->fib, n);
+      fib_delete(&t->fib, &n->n);
       goto again;
     }
   }
@@ -3305,7 +3304,7 @@ rte_update_out(struct channel *c, const net_addr *n, rte *new, rte *old0, int re
       goto drop_withdraw;
 
     if (!net->routes)
-      fib_delete(&tab->fib, net);
+      fib_delete(&tab->fib, &net->n);
 
     return 1;
   }

@@ -251,7 +251,7 @@ rip_announce_rte(struct rip_proto *p, struct rip_entry *en)
 void
 rip_update_rte(struct rip_proto *p, net_addr *n, struct rip_rte *new)
 {
-  struct rip_entry *en = fib_get(&p->rtable, n);
+  struct rip_entry *en = FIB_GET(&p->rtable, n, struct rip_entry, n);
   struct rip_rte *rt, **rp;
   int changed = 0;
 
@@ -301,7 +301,7 @@ rip_update_rte(struct rip_proto *p, net_addr *n, struct rip_rte *new)
 void
 rip_withdraw_rte(struct rip_proto *p, net_addr *n, struct rip_neighbor *from)
 {
-  struct rip_entry *en = fib_find(&p->rtable, n);
+  struct rip_entry *en = FIB_FIND(&p->rtable, n, struct rip_entry, n);
   struct rip_rte *rt, **rp;
 
   if (!en)
@@ -365,7 +365,7 @@ rip_rt_notify(struct proto *P, struct channel *ch UNUSED, struct network *net, s
      * collection.
      */
 
-    en = fib_get(&p->rtable, net->n.addr);
+    en = FIB_GET(&p->rtable, net->n.addr, struct rip_entry, n);
 
     old_metric = en->valid ? en->metric : -1;
 
@@ -379,7 +379,7 @@ rip_rt_notify(struct proto *P, struct channel *ch UNUSED, struct network *net, s
   else
   {
     /* Withdraw */
-    en = fib_find(&p->rtable, net->n.addr);
+    en = FIB_FIND(&p->rtable, net->n.addr, struct rip_entry, n);
 
     if (!en || en->valid != RIP_ENTRY_VALID)
       return;
@@ -960,7 +960,7 @@ rip_timer(timer *t)
     if (!en->valid && !en->routes)
     {
       FIB_ITERATE_PUT(&fit);
-      fib_delete(&p->rtable, en);
+      fib_delete(&p->rtable, &en->n);
       goto loop;
     }
   }

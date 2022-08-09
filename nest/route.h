@@ -52,7 +52,7 @@ struct fib_iterator {			/* See lib/slists.h for an explanation */
   uint hash;
 };
 
-typedef void (*fib_init_fn)(struct fib *, void *);
+typedef void (*fib_init_fn)(struct fib *, struct fib_node *);
 
 struct fib {
   pool *fib_pool;			/* Pool holding all our data */
@@ -69,20 +69,18 @@ struct fib {
   fib_init_fn init;			/* Constructor */
 };
 
-static inline void * fib_node_to_user(struct fib *f, struct fib_node *e)
-{ return e ? (void *) ((char *) e - f->node_offset) : NULL; }
-
-static inline struct fib_node * fib_user_to_node(struct fib *f, void *e)
-{ return e ? (void *) ((char *) e + f->node_offset) : NULL; }
-
 void fib_init(struct fib *f, pool *p, uint addr_type, uint node_size, uint node_offset, uint hash_order, fib_init_fn init);
-void *fib_find(struct fib *, const net_addr *);	/* Find or return NULL if doesn't exist */
-void *fib_get_chain(struct fib *f, const net_addr *a); /* Find first node in linked list from hash table */
-void *fib_get(struct fib *, const net_addr *);	/* Find or create new if nonexistent */
-void *fib_route(struct fib *, const net_addr *); /* Longest-match routing lookup */
-void fib_delete(struct fib *, void *);	/* Remove fib entry */
+struct fib_node *fib_find(struct fib *, const net_addr *);	/* Find or return NULL if doesn't exist */
+struct fib_node *fib_get_chain(struct fib *f, const net_addr *a); /* Find first node in linked list from hash table */
+struct fib_node *fib_get(struct fib *, const net_addr *);	/* Find or create new if nonexistent */
+struct fib_node *fib_route(struct fib *, const net_addr *); /* Longest-match routing lookup */
+void fib_delete(struct fib *, struct fib_node *);	/* Remove fib entry */
 void fib_free(struct fib *);		/* Destroy the fib */
 void fib_check(struct fib *);		/* Consistency check for debugging */
+
+#define FIB_FIND(f, a, t, n)  SKIP_BACK_OR_NULL(t, n, fib_find((f), (a)))
+#define FIB_GET(f, a, t, n)   SKIP_BACK_OR_NULL(t, n, fib_get((f), (a)))
+#define FIB_ROUTE(f, a, t, n) SKIP_BACK_OR_NULL(t, n, fib_route((f), (a)))
 
 void fit_init(struct fib_iterator *, struct fib *); /* Internal functions, don't call */
 struct fib_node *fit_get(struct fib *, struct fib_iterator *);
@@ -92,18 +90,20 @@ void fit_put_end(struct fib_iterator *i);
 void fit_copy(struct fib *f, struct fib_iterator *dst, struct fib_iterator *src);
 
 
-#define FIB_WALK(fib, type, z) do {				\
+#define FIB_WALK2(fib, type, member, z) do {			\
 	struct fib_node *fn_, **ff_ = (fib)->hash_table;	\
 	uint count_ = (fib)->hash_size;				\
 	type *z;						\
 	while (count_--)					\
-	  for (fn_ = *ff_++; z = fib_node_to_user(fib, fn_); fn_=fn_->next)
+	  for (fn_ = *ff_++; z = SKIP_BACK_OR_NULL(type, member, fn_); fn_=fn_->next)
+
+#define FIB_WALK(fib, type, z) FIB_WALK2(fib, type, n, z)
 
 #define FIB_WALK_END } while (0)
 
 #define FIB_ITERATE_INIT(it, fib) fit_init(it, fib)
 
-#define FIB_ITERATE_START(fib, it, type, z) do {		\
+#define FIB_ITERATE_START2(fib, it, type, member, z) do {		\
 	struct fib_node *fn_ = fit_get(fib, it);		\
 	uint count_ = (fib)->hash_size;				\
 	uint hpos_ = (it)->hash;				\
@@ -116,7 +116,9 @@ void fit_copy(struct fib *f, struct fib_iterator *dst, struct fib_iterator *src)
 	       fn_ = (fib)->hash_table[hpos_];			\
 	       continue;					\
 	    }							\
-	  z = fib_node_to_user(fib, fn_);
+	  z = SKIP_BACK_OR_NULL(type, member, fn_);
+
+#define FIB_ITERATE_START(fib, it, type, z) FIB_ITERATE_START2(fib, it, type, n, z)
 
 #define FIB_ITERATE_END fn_ = fn_->next; } } while(0)
 
@@ -309,11 +311,10 @@ void rt_flowspec_unlink(rtable *src, rtable *dst);
 rtable *rt_setup(pool *, struct rtable_config *);
 static inline void rt_shutdown(rtable *r) { rfree(r->rp); }
 
-static inline net *net_find(rtable *tab, const net_addr *addr) { return (net *) fib_find(&tab->fib, addr); }
+#define net_find(tab, addr) FIB_FIND(&(tab)->fib, (addr), struct network, n)
 static inline net *net_find_valid(rtable *tab, const net_addr *addr)
 { net *n = net_find(tab, addr); return (n && rte_is_valid(n->routes)) ? n : NULL; }
-static inline net *net_get(rtable *tab, const net_addr *addr) { return (net *) fib_get(&tab->fib, addr); }
-net *net_get(rtable *tab, const net_addr *addr);
+#define net_get(tab, addr)  FIB_GET(&(tab)->fib, (addr), struct network, n)
 net *net_route(rtable *tab, const net_addr *n);
 int net_roa_check(rtable *tab, const net_addr *n, u32 asn);
 rte *rte_find(net *net, struct rte_src *src);

@@ -1319,7 +1319,7 @@ ospf_rt_notify(struct proto *P, struct channel *ch UNUSED, net *n, rte *new, rte
 
   if (!new)
   {
-    nf = fib_find(&p->rtf, n->n.addr);
+    nf = ort_fib_find(&p->rtf, n->n.addr);
 
     if (!nf || !nf->external_rte)
       return;
@@ -1382,7 +1382,7 @@ ospf_rt_notify(struct proto *P, struct channel *ch UNUSED, net *n, rte *new, rte
     }
   }
 
-  nf = fib_get(&p->rtf, n->n.addr);
+  nf = ort_fib_get(&p->rtf, n->n.addr);
   ospf_originate_ext_lsa(p, oa, nf, LSA_M_EXPORT, metric, ebit, fwd, tag, 1, p->vpn_pe);
   nf->external_rte = 1;
 }
