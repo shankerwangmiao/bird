@@ -231,6 +231,40 @@ t_ip6_prefix_equal(void)
   return 1;
 }
 
+static int
+t_ip4_getbits(void)
+{
+  ip4_addr t = ip4_build(0xde, 0xad, 0xbe, 0xef);
+
+  bt_assert(ip4_getbits(t, 0, 1) == 1);
+  bt_assert(ip4_getbits(t, 0, 32) == 0xdeadbeef);
+  bt_assert(ip4_getbits(t, 4, 12) == 0xead);
+
+  return 1;
+}
+
+static int
+t_ip6_getbits(void)
+{
+  ip6_addr t = ip6_build(0x20010db8, 0xdeadb14d, 0x13579bdf, 0x02468ace);
+
+  bt_assert(ip6_getbits(t, 0, 1) == 0);
+  bt_assert(ip6_getbits(t, 0, 32) == 0x20010db8);
+  bt_assert(ip6_getbits(t, 0, 31) == (0x20010db8 >> 1));
+  bt_assert(ip6_getbits(t, 1, 31) == 0x20010db8);
+  bt_assert(ip6_getbits(t, 32, 16) == 0xdead);
+  bt_assert(ip6_getbits(t, 16, 32) == 0x0db8dead);
+  bt_assert(ip6_getbits(t, 1, 32) == (0x20010db8u << 1) | (0xd >> 3));
+  bt_assert(ip6_getbits(t, 2, 32) == (0x20010db8u << 2) | (0xd >> 2));
+  bt_assert(ip6_getbits(t, 3, 32) == (0x20010db8u << 3) | (0xd >> 1));
+  bt_assert(ip6_getbits(t, 12, 6) == 4);
+  bt_assert(ip6_getbits(t, 30, 6) == 0xd);
+  bt_assert(ip6_getbits(t, 60, 6) == 0x34);
+  bt_assert(ip6_getbits(t, 80, 32) == 0x9bdf0246);
+
+  return 1;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -242,6 +276,8 @@ main(int argc, char *argv[])
   bt_test_suite(t_ip6_ntop, "Converting ip6_addr struct to IPv6 string");
   bt_test_suite(t_ip4_prefix_equal, "Testing ip4_prefix_equal()");
   bt_test_suite(t_ip6_prefix_equal, "Testing ip6_prefix_equal()");
+  bt_test_suite(t_ip4_getbits, "Checking getting bits from IPv4");
+  bt_test_suite(t_ip6_getbits, "Checking getting bits from IPv6");
 
   return bt_exit_value();
 }

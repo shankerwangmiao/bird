@@ -301,13 +301,32 @@ static inline u32 ip4_getbit(ip4_addr a, uint pos)
 { return (_I(a) >> (31 - pos)) & 1; }
 
 static inline u32 ip4_getbits(ip4_addr a, uint pos, uint n)
-{ return (_I(a) >> ((32 - n) - pos)) & ((1u << n) - 1); }
+{
+  if ((n == 32) && (pos == 0))
+    return _I(a);
+  else ASSERT_DIE(pos + n <= 32);
+
+  return (_I(a) >> ((32 - n) - pos)) & ((1u << n) - 1);
+}
 
 static inline u32 ip6_getbit(ip6_addr a, uint pos)
 { return (a.addr[pos / 32] >> (31 - (pos % 32))) & 0x1; }
 
 static inline u32 ip6_getbits(ip6_addr a, uint pos, uint n)
-{ return (a.addr[pos / 32] >> ((32 - n) - (pos % 32))) & ((1u << n) - 1); }
+{
+  ASSERT_DIE((n <= 32));
+  if (n == 0)
+    return 0;
+
+  if ((n == 32) && (pos % 32 == 0))
+    return a.addr[pos / 32];
+
+  if (pos / 32 == (pos + n - 1) / 32)
+    return (a.addr[pos / 32] >> ((32 - n) - (pos % 32))) & ((1u << n) - 1);
+
+  uint mid = BIRD_ALIGN(pos, 32);
+  return (ip6_getbits(a, pos, mid - pos) << (pos + n - mid)) | ip6_getbits(a, mid, pos + n - mid);
+}
 
 static inline u32 ip4_setbit(ip4_addr *a, uint pos)
 { return _I(*a) |= (0x80000000 >> pos); }
