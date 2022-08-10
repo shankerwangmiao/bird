@@ -1415,54 +1415,30 @@ ospf_rt_abr2(struct ospf_proto *p)
 
 /* Like fib_route(), but ignores dummy rt entries */
 static ort *
-ospf_fib_route_ip4(struct fib *f, ip4_addr a, int len)
-{
-  net_addr_ip4 net = NET_ADDR_IP4(a, len);
-  ort *nf;
-
-loop:
-  nf = ort_fib_find(f, (net_addr *) &net);
-  if (nf && nf->n.type)
-    return nf;
-
-  if (net.pxlen > 0)
-  {
-    net.pxlen--;
-    ip4_clrbit(&net.prefix, net.pxlen);
-    goto loop;
-  }
-
-  return NULL;
-}
-
-static ort *
-ospf_fib_route_ip6(struct fib *f, ip6_addr a, int len)
-{
-  net_addr_ip6 net = NET_ADDR_IP6(a, len);
-  ort *nf;
-
-loop:
-  nf = ort_fib_find(f, (net_addr *) &net);
-  if (nf && nf->n.type)
-    return nf;
-
-  if (net.pxlen > 0)
-  {
-    net.pxlen--;
-    ip6_clrbit(&net.prefix, net.pxlen);
-    goto loop;
-  }
-
-  return NULL;
-}
-
-static ort *
 ospf_fib_route(struct fib *f, ip_addr a)
 {
   if (f->addr_type == NET_IP4)
-    return ospf_fib_route_ip4(f, ipa_to_ip4(a), IP4_MAX_PREFIX_LENGTH);
+  {
+    net_addr_ip4 net = NET_ADDR_IP4(ipa_to_ip4(a), IP4_MAX_PREFIX_LENGTH);
+    FIB_WALK_TO_ROOT(f, &net, ip4)
+    {
+      ort *nf = SKIP_BACK_OR_NULL(ort, fn, FIB_WALK_NODE);
+      if (nf && nf->n.type)
+	return nf;
+    }
+  }
   else
-    return ospf_fib_route_ip6(f, ipa_to_ip6(a), IP6_MAX_PREFIX_LENGTH);
+  {
+    net_addr_ip6 net = NET_ADDR_IP6(ipa_to_ip6(a), IP6_MAX_PREFIX_LENGTH);
+    FIB_WALK_TO_ROOT(f, &net, ip6)
+    {
+      ort *nf = SKIP_BACK_OR_NULL(ort, fn, FIB_WALK_NODE);
+      if (nf && nf->n.type)
+	return nf;
+    }
+  }
+
+  return NULL;
 }
 
 
