@@ -57,23 +57,13 @@
 #define AFI_IPV6		2
 
 
-#ifdef DEBUGGING
-
 typedef struct ip4_addr {
   u32 addr;
 } ip4_addr;
 
 #define _MI4(x) ((struct ip4_addr) { x })
+#define _MI4_UNQ(x) { x }
 #define _I(x) (x).addr
-
-#else
-
-typedef u32 ip4_addr;
-
-#define _MI4(x) ((u32) (x))
-#define _I(x) (x)
-
-#endif
 
 
 typedef struct ip6_addr {
@@ -81,6 +71,7 @@ typedef struct ip6_addr {
 } ip6_addr;
 
 #define _MI6(a,b,c,d) ((struct ip6_addr) {{ a, b, c, d }})
+#define _MI6_UNQ(a,b,c,d) {{ a, b, c, d }}
 #define _I0(a) ((a).addr[0])
 #define _I1(a) ((a).addr[1])
 #define _I2(a) ((a).addr[2])
@@ -114,7 +105,9 @@ typedef ip6_addr ip_addr;
 #define ip4_to_u32(x) _I(x)
 
 #define ip4_build(a,b,c,d) _MI4(((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
+#define ip4_build_init(a,b,c,d) _MI4_UNQ(((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
 #define ip6_build(a,b,c,d) _MI6(a,b,c,d)
+#define ip6_build_init(a,b,c,d) _MI6_UNQ(a,b,c,d)
 
 #define ipa_build4(a,b,c,d) ipa_from_ip4(ip4_build(a,b,c,d))
 #define ipa_build6(a,b,c,d) ipa_from_ip6(ip6_build(a,b,c,d))
