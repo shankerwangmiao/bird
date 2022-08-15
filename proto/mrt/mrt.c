@@ -609,7 +609,7 @@ mrt_table_dump_step(struct mrt_table_dump_state *s)
 
     mrt_peer_table_dump(s);
 
-    FIB_ITERATE_INIT(&s->fit, &s->table->fib);
+    FIB_ITERATE_INIT(&s->fit, &s->table->fib_regular);
     s->table_open = 1;
 
   step:

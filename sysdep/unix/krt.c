@@ -360,7 +360,7 @@ krt_learn_scan(struct krt_proto *p, rte *e)
 static void
 krt_learn_prune(struct krt_proto *p)
 {
-  struct fib *fib = &p->krt_table->fib;
+  struct fib *fib = &p->krt_table->fib_regular;
   struct fib_iterator fit;
 
   KRT_TRACE(p, D_EVENTS, "Pruning inherited routes");
@@ -554,7 +554,7 @@ krt_flush_routes(struct krt_proto *p)
   struct rtable *t = p->p.main_channel->table;
 
   KRT_TRACE(p, D_EVENTS, "Flushing kernel routes");
-  FIB_WALK(&t->fib, net, n)
+  TAB_FIB_WALK(t, net, n)
     {
       if (krt_is_installed(p, n))
 	{
@@ -722,7 +722,7 @@ krt_prune(struct krt_proto *p)
   struct rtable *t = p->p.main_channel->table;
 
   KRT_TRACE(p, D_EVENTS, "Pruning table %s", t->name);
-  FIB_WALK(&t->fib, net, n)
+  TAB_FIB_WALK(t, net, n)
   {
     if (p->ready && krt_is_installed(p, n) && !bmap_test(&p->seen_map, n->routes->id))
     {

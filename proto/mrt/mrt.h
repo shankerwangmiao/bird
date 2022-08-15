@@ -75,6 +75,7 @@ struct mrt_table_dump_state {
 
   struct rtable *table;			/* Processed table, NULL initially */
   struct fib_iterator fit;		/* Iterator in processed table */
+  struct fib *fib_current;		/* The actual FIB we're iterating over */
   int table_open;			/* Whether iterator is linked */
 
   int ipv4;				/* Processed table is IPv4 */

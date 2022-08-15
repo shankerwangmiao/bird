@@ -222,11 +222,7 @@ table_sorted:
 
 table_opt:
    SORTED bool { this_table->sorted = $2; }
- | TRIE bool {
-     if (!net_val_match(this_table->addr_type, NB_IP | NB_VPN | NB_ROA | NB_IP6_SADR))
-       cf_error("Trie option not supported for %s table", net_label[this_table->addr_type]);
-     this_table->trie_used = $2;
-   }
+ | TRIE bool
  | MIN SETTLE TIME expr_us { this_table->min_settle_time = $4; }
  | MAX SETTLE TIME expr_us { this_table->max_settle_time = $4; }
  | GC THRESHOLD expr { this_table->gc_threshold = $3; }

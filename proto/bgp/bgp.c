@@ -2059,10 +2059,6 @@ bgp_postconfig(struct proto_config *CF)
     if ((BGP_SAFI(cc->afi) == BGP_SAFI_FLOW) && cc->validate && !cc->base_table)
       cc->base_table = bgp_default_base_table(cf, cc);
 
-    if (cc->base_table && !cc->base_table->trie_used)
-      cf_error("Flowspec validation requires base table (%s) with trie",
-	       cc->base_table->name);
-
     if (cf->multihop && (cc->gw_mode == GW_DIRECT))
       cf_error("Multihop BGP cannot use direct gateway mode");
 

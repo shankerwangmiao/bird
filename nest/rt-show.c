@@ -218,11 +218,8 @@ rt_show_cleanup(struct cli *c)
   struct rt_show_data_rtable *tab;
 
   /* Unlink the iterator */
-  if (d->table_open && !d->trie_walk)
+  if (d->table_open)
     fit_get(&d->fit);
-
-  if (d->walk_lock)
-    rt_unlock_trie(d->tab->table, d->walk_lock);
 
   /* Unlock referenced tables */
   WALK_LIST(tab, d->tables)
@@ -250,20 +247,14 @@ rt_show_cont(struct cli *c)
   if (!d->table_open)
   {
     /* We use either trie-based walk or fib-based walk */
-    d->trie_walk = tab->trie &&
+    d->trie_walk = rt_has_trie(tab) &&
       (d->addr_mode == RSD_ADDR_IN) &&
       net_val_match(tab->addr_type, NB_IP);
 
-    if (d->trie_walk && !d->walk_state)
-      d->walk_state = lp_allocz(c->parser_pool, sizeof (struct f_trie_walk_state));
-
     if (d->trie_walk)
-    {
-      d->walk_lock = rt_lock_trie(tab);
-      trie_walk_init(d->walk_state, tab->trie, d->addr);
-    }
+      rt_trie_walk_init(&d->trie_walker, d->addr);
     else
-      FIB_ITERATE_INIT(&d->fit, &tab->fib);
+      FIB_ITERATE_INIT(&d->fit, &tab->fib_regular);
 
     d->table_open = 1;
     d->table_counter++;
@@ -280,21 +271,13 @@ rt_show_cont(struct cli *c)
   if (d->trie_walk)
   {
     /* Trie-based walk */
-    net_addr addr;
-    while (trie_walk_next(d->walk_state, &addr))
+    for (net *n; n = rt_trie_walk_next(&d->trie_walker, tab); )
     {
-      net *n = net_find(tab, &addr);
-      if (!n)
-	continue;
-
       rt_show_net(c, n, d);
 
       if (!--max)
 	return;
     }
-
-    rt_unlock_trie(tab, d->walk_lock);
-    d->walk_lock = NULL;
   }
   else
   {
@@ -314,6 +297,12 @@ rt_show_cont(struct cli *c)
     next:;
     }
     FIB_ITERATE_END;
+
+    if ((d->fit.fib == &tab->fib_regular) && rt_has_trie(tab))
+    {
+      FIB_ITERATE_INIT(&d->fit, &tab->fib_trie);
+      return;
+    }
   }
 
   if (d->stats)

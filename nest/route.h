@@ -22,9 +22,8 @@ struct symbol;
 struct timer;
 struct fib;
 struct filter;
-struct f_trie;
-struct f_trie_walk_state;
 struct cli;
+struct rt_trie_walker;
 
 /*
  *	Generic data structure for storing network prefixes. Also used
@@ -201,7 +200,6 @@ struct rtable_config {
   uint gc_period;			/* Approximate time between two consecutive GC runs */
   byte sorted;				/* Routes of network are sorted according to rte_better() */
   byte internal;			/* Internal table of a protocol */
-  byte trie_used;			/* Rtable has attached trie */
   btime min_settle_time;		/* Minimum settle time for notifications */
   btime max_settle_time;		/* Maximum settle time for notifications */
 };
@@ -210,8 +208,7 @@ typedef struct rtable {
   resource r;
   node n;				/* Node in list of all tables */
   pool *rp;				/* Resource pool to allocate everything from, including itself */
-  struct fib fib;
-  struct f_trie *trie;			/* Trie of prefixes defined in fib */
+  struct fib fib_regular, fib_trie;
   char *name;				/* Name of this table */
   list channels;			/* List of attached channels (struct channel) */
   uint addr_type;			/* Type of address data stored in table (NET_*) */
@@ -235,21 +232,20 @@ typedef struct rtable {
   btime gc_time;			/* Time of last GC */
   uint gc_counter;			/* Number of operations since last GC */
   byte prune_state;			/* Table prune state, 1 -> scheduled, 2-> running */
-  byte prune_trie;			/* Prune prefix trie during next table prune */
   byte hcu_scheduled;			/* Hostcache update is scheduled */
   byte nhu_state;			/* Next Hop Update state */
   struct fib_iterator prune_fit;	/* Rtable prune FIB iterator */
   struct fib_iterator nhu_fit;		/* Next Hop Update FIB iterator */
-  struct f_trie *trie_new;		/* New prefix trie defined during pruning */
-  struct f_trie *trie_old;		/* Old prefix trie waiting to be freed */
-  u32 trie_lock_count;			/* Prefix trie locked by walks */
-  u32 trie_old_lock_count;		/* Old prefix trie locked by walks */
 
   list subscribers;			/* Subscribers for notifications */
   struct timer *settle_timer;		/* Settle time for notifications */
   list flowspec_links;			/* List of flowspec links, src for NET_IPx and dst for NET_FLOWx */
   struct f_trie *flowspec_trie;		/* Trie for evaluation of flowspec notifications */
 } rtable;
+
+#define TAB_FIB_WALK(t, net, n) \
+  for (struct fib *f = &t->fib_regular, *ft = rt_has_trie(t) ? &t->fib_trie : NULL; f; f = ft, ft = NULL) \
+  FIB_WALK(f, net, n)
 
 struct rt_subscription {
   node n;
@@ -274,6 +270,21 @@ typedef struct network {
   struct rte *routes;			/* Available routes for this network */
   struct fib_node n;			/* FIB flags reserved for kernel syncer */
 } net;
+
+struct net_trie_node {
+  u64 longer;				/* Prefixes longer than +6 present */
+  u32 local5;				/* Prefixes +5 long present */
+  u16 local4;				/* Prefixes +4 long present */
+  u8 local3;				/* Prefixes +3 long present */
+  u8 local2:4;				/* Prefixes +2 long present */
+  u8 local1:2;				/* Prefixes +1 long present */
+  u8 unused:2;
+};
+
+struct net_trie {
+  struct net_trie_node trie;
+  struct network net;			/* The actual network structure */
+};
 
 struct hostcache {
   slab *slab;				/* Slab holding all hostentries */
@@ -349,19 +360,21 @@ void rt_postconfig(struct config *);
 void rt_commit(struct config *new, struct config *old);
 void rt_lock_table(rtable *);
 void rt_unlock_table(rtable *);
-struct f_trie * rt_lock_trie(rtable *tab);
-void rt_unlock_trie(rtable *tab, struct f_trie *trie);
 void rt_subscribe(rtable *tab, struct rt_subscription *s);
 void rt_unsubscribe(struct rt_subscription *s);
 void rt_flowspec_link(rtable *src, rtable *dst);
 void rt_flowspec_unlink(rtable *src, rtable *dst);
 rtable *rt_setup(pool *, struct rtable_config *);
 static inline void rt_shutdown(rtable *r) { rfree(r->rp); }
+static inline int rt_has_trie(rtable *t) { return !t->internal && !!t->fib_trie.fib_pool; }
+void rt_trie_walk_init(struct rt_trie_walker *, const net_addr *);
+net *rt_trie_walk_next(struct rt_trie_walker *, rtable *);
 
-#define net_find(tab, addr) FIB_FIND(&(tab)->fib, (addr), struct network, n)
+
+net *net_find(rtable *tab, const net_addr *n);
 static inline net *net_find_valid(rtable *tab, const net_addr *addr)
 { net *n = net_find(tab, addr); return (n && rte_is_valid(n->routes)) ? n : NULL; }
-#define net_get(tab, addr)  FIB_GET(&(tab)->fib, (addr), struct network, n)
+net *net_get(rtable *tab, const net_addr *n);
 net *net_route(rtable *tab, const net_addr *n);
 int net_roa_check(rtable *tab, const net_addr *n, u32 asn);
 rte *rte_find(net *net, struct rte_src *src);
@@ -412,14 +425,24 @@ struct rt_show_data_rtable {
   struct channel *export_channel;
 };
 
+struct rt_trie_walker {
+  net_addr_union last;			/* Last network given */
+  struct net_trie_node ntn;		/* Stored trie information */
+  u8 bits_stack[128 / 6 + 1];		/* Stored lastbits variable */
+  u8 bits_stack_used;			/* How many of these are used */
+  uint ntnlen;				/* Which part of trie is stored */
+  uint minlen;				/* Minimal allowed prefix length */
+  uint lastbits;			/* Trie bits of @last */
+  uint lastblen;			/* Length of these bits */
+};
+
 struct rt_show_data {
   net_addr *addr;
   list tables;
   struct rt_show_data_rtable *tab;	/* Iterator over table list */
   struct rt_show_data_rtable *last_table; /* Last table in output */
   struct fib_iterator fit;		/* Iterator over networks in table */
-  struct f_trie_walk_state *walk_state;	/* Iterator over networks in trie */
-  struct f_trie *walk_lock;		/* Locked trie for walking */
+  struct rt_trie_walker	trie_walker;	/* Iterator by trie */
   int verbose, tables_defined_by;
   const struct filter *filter;
   struct proto *show_protocol;

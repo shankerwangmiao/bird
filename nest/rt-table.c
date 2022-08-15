@@ -88,7 +88,7 @@
  * the dst is not a table, but a channel, who refeeds routes through a filter.
  */
 
-#undef LOCAL_DEBUG
+#define LOCAL_DEBUG
 
 #include "nest/bird.h"
 #include "nest/route.h"
@@ -126,108 +126,464 @@ static inline void rt_schedule_notify(rtable *tab);
 static void rt_flowspec_notify(rtable *tab, net *net);
 static void rt_kick_prune_timer(rtable *tab);
 
-
-static void
-net_init_with_trie(struct fib *f, struct fib_node *n)
+net *net_find(rtable *t, const net_addr *n)
 {
-  rtable *tab = SKIP_BACK(rtable, fib, f);
+  if (!rt_has_trie(t) || (n->pxlen % 6))
+    return FIB_FIND(&t->fib_regular, n, struct network, n);
+  else
+    return FIB_FIND(&t->fib_trie, n, struct network, n);
+}
 
-  if (tab->trie)
-    trie_add_prefix(tab->trie, n->addr, n->addr->pxlen, n->addr->pxlen);
+net *net_get(rtable *t, const net_addr *n)
+{
+  DBG("net_get(%s, %N)\n", t->name, n);
+  if (!rt_has_trie(t) || (n->pxlen % 6))
+    return FIB_GET(&t->fib_regular, n, struct network, n);
+  else
+    return FIB_GET(&t->fib_trie, n, struct network, n);
+}
 
-  if (tab->trie_new)
-    trie_add_prefix(tab->trie_new, n->addr, n->addr->pxlen, n->addr->pxlen);
+static const ip4_addr rt_trie_mask_ip4[] = {
+  ip4_build_init(0,0,0,0),
+  ip4_build_init(0xfc,0,0,0),
+  ip4_build_init(0xff,0xf0,0,0),
+  ip4_build_init(0xff,0xff,0xc0,0),
+  ip4_build_init(0xff,0xff,0xff,0),
+  ip4_build_init(0xff,0xff,0xff,0xfc),
+};
+
+static const ip6_addr rt_trie_mask_ip6[] = {
+  ip6_build_init(0,0,0,0),
+  ip6_build_init(0xfc000000,0,0,0),
+  ip6_build_init(0xfff00000,0,0,0),
+  ip6_build_init(0xffffc000,0,0,0),
+  ip6_build_init(0xffffff00,0,0,0),
+  ip6_build_init(0xfffffffc,0,0,0),
+  ip6_build_init(0xffffffff,0xf0000000,0,0),
+  ip6_build_init(0xffffffff,0xffc00000,0,0),
+  ip6_build_init(0xffffffff,0xffff0000,0,0),
+  ip6_build_init(0xffffffff,0xfffffc00,0,0),
+  ip6_build_init(0xffffffff,0xfffffff0,0,0),
+  ip6_build_init(0xffffffff,0xffffffff,0xc0000000,0),
+  ip6_build_init(0xffffffff,0xffffffff,0xff000000,0),
+  ip6_build_init(0xffffffff,0xffffffff,0xfffc0000,0),
+  ip6_build_init(0xffffffff,0xffffffff,0xfffff000,0),
+  ip6_build_init(0xffffffff,0xffffffff,0xffffffc0,0),
+  ip6_build_init(0xffffffff,0xffffffff,0xffffffff,0),
+  ip6_build_init(0xffffffff,0xffffffff,0xffffffff,0xfc000000),
+  ip6_build_init(0xffffffff,0xffffffff,0xffffffff,0xfff00000),
+  ip6_build_init(0xffffffff,0xffffffff,0xffffffff,0xffffc000),
+  ip6_build_init(0xffffffff,0xffffffff,0xffffffff,0xffffff00),
+  ip6_build_init(0xffffffff,0xffffffff,0xffffffff,0xfffffffc),
+};
+
+struct rt_parent_net {
+  uint blen, bits;
+  net_addr_union addr;
+};
+
+#define RT_SETUP_PARENT_ADDR(t,a,b,nt,pa,bits,blen)			\
+  pa.nt = *((net_addr_##nt *) a);					\
+  blen = (pa.n.pxlen - 1) % 6 + 1;					\
+  pa.n.pxlen -= blen;							\
+  bits = b##_getbits(pa.b.prefix, pa.b.pxlen, blen);			\
+  pa.b.prefix = b##_and(rt_trie_mask_##b[pa.n.pxlen / 6], pa.b.prefix);	\
+
+struct rt_parent_net rt_setup_parent_net(rtable *tab, net_addr *a)
+{
+  struct rt_parent_net rpn;
+  switch (tab->addr_type)
+  {
+    case NET_IP4:
+      RT_SETUP_PARENT_ADDR(tab, a, ip4, ip4, rpn.addr, rpn.bits, rpn.blen);
+      break;
+    case NET_VPN4:
+      RT_SETUP_PARENT_ADDR(tab, a, ip4, vpn4, rpn.addr, rpn.bits, rpn.blen);
+      break;
+    case NET_IP6:
+      RT_SETUP_PARENT_ADDR(tab, a, ip6, ip6, rpn.addr, rpn.bits, rpn.blen);
+      break;
+    case NET_VPN6:
+      RT_SETUP_PARENT_ADDR(tab, a, ip6, vpn6, rpn.addr, rpn.bits, rpn.blen);
+      break;
+
+      /* TODO: add NET_ROA4 and NET_ROA6 for faster ROA checks */
+
+    default:
+      bug("Table trie setup mismatch for addr_type %d", tab->addr_type);
+  }
+
+  return rpn;
+}
+
+static inline int
+net_trie_node_empty(struct net_trie *tn)
+{
+  return
+      !tn->trie.local1 &&
+      !tn->trie.local2 &&
+      !tn->trie.local3 &&
+      !tn->trie.local4 &&
+      !tn->trie.local5 &&
+      !tn->trie.longer
+      ;
+}
+
+void
+rt_trie_walk_init(struct rt_trie_walker *w, const net_addr *a)
+{
+  net_copy(&w->last.n, a);
+
+  w->ntnlen = ~0;
+  w->minlen = w->last.n.pxlen;
+  w->last.n.pxlen = ~0;
 }
 
 static inline net *
-net_route_ip4_trie(rtable *t, const net_addr_ip4 *n0)
+rt_trie_walk_down(struct rt_trie_walker *w)
 {
-  TRIE_WALK_TO_ROOT_IP4(t->trie, n0, n)
-  {
-    net *r;
-    if (r = net_find_valid(t, (net_addr *) &n))
-      return r;
-  }
-  TRIE_WALK_TO_ROOT_END;
+  /* Go down. */
+  w->lastblen++;
+  w->last.n.pxlen++;
+  w->lastbits <<= 1;
 
   return NULL;
 }
 
-static inline net *
-net_route_vpn4_trie(rtable *t, const net_addr_vpn4 *n0)
+static inline int
+rt_trie_walk_up(struct rt_trie_walker *w, rtable *tab)
 {
-  TRIE_WALK_TO_ROOT_IP4(t->trie, (const net_addr_ip4 *) n0, px)
-  {
-    net_addr_vpn4 n = NET_ADDR_VPN4(px.prefix, px.pxlen, n0->rd);
-
-    net *r;
-    if (r = net_find_valid(t, (net_addr *) &n))
-      return r;
+  /* Go up. */
+  /* Modify the address */
+  switch (tab->addr_type) {
+    case NET_IP4:
+    case NET_VPN4:
+      w->last.ip4.prefix = ip4_addbit(w->last.ip4.prefix, w->last.ip4.pxlen-1);
+      break;
+    case NET_IP6:
+    case NET_VPN6:
+      w->last.ip6.prefix = ip6_addbit(w->last.ip6.prefix, w->last.ip6.pxlen-1);
+      break;
+    default:
+      bug("Bad addr type in trie walk: %d", tab->addr_type);
   }
-  TRIE_WALK_TO_ROOT_END;
 
-  return NULL;
-}
-
-static inline net *
-net_route_ip6_trie(rtable *t, const net_addr_ip6 *n0)
-{
-  TRIE_WALK_TO_ROOT_IP6(t->trie, n0, n)
+  /* Modify the local bits portion */
+  while (++w->lastbits >> w->lastblen)
   {
-    net *r;
-    if (r = net_find_valid(t, (net_addr *) &n))
-      return r;
-  }
-  TRIE_WALK_TO_ROOT_END;
-
-  return NULL;
-}
-
-static inline net *
-net_route_vpn6_trie(rtable *t, const net_addr_vpn6 *n0)
-{
-  TRIE_WALK_TO_ROOT_IP6(t->trie, (const net_addr_ip6 *) n0, px)
-  {
-    net_addr_vpn6 n = NET_ADDR_VPN6(px.prefix, px.pxlen, n0->rd);
-
-    net *r;
-    if (r = net_find_valid(t, (net_addr *) &n))
-      return r;
-  }
-  TRIE_WALK_TO_ROOT_END;
-
-  return NULL;
-}
-
-static inline net *
-net_route_ip6_sadr_trie(rtable *t, const net_addr_ip6_sadr *n0)
-{
-  TRIE_WALK_TO_ROOT_IP6(t->trie, (const net_addr_ip6 *) n0, px)
-  {
-    net_addr_ip6_sadr n = NET_ADDR_IP6_SADR(px.prefix, px.pxlen, n0->src_prefix, n0->src_pxlen);
-    net *best = NULL;
-    int best_pxlen = 0;
-
-    /* We need to do dst first matching. Since sadr addresses are hashed on dst
-       prefix only, find the hash table chain and go through it to find the
-       match with the longest matching src prefix. */
-    for (struct fib_node *fn = fib_get_chain(&t->fib, (net_addr *) &n); fn; fn = fn->next)
+    /* Bit overflow! */
+    ASSUME(w->last.n.pxlen % 6 == 0);
+    if (w->last.n.pxlen == 0)
     {
-      net_addr_ip6_sadr *a = (void *) fn->addr;
-
-      if (net_equal_dst_ip6_sadr(&n, a) &&
-	  net_in_net_src_ip6_sadr(&n, a) &&
-	  (a->src_pxlen >= best_pxlen))
-      {
-	best = SKIP_BACK(net, n, fn);
-	best_pxlen = a->src_pxlen;
-      }
+      /* Nothing more to do. */
+      w->minlen = ~0;
+      return 0;
     }
 
-    if (best)
-      return best;
+    /* Pop the bits stack */
+    ASSUME(w->bits_stack_used > 0);
+    w->last.n.pxlen -= 6;
+    w->lastbits = w->bits_stack[--w->bits_stack_used];
+    w->lastblen = 6;
   }
-  TRIE_WALK_TO_ROOT_END;
+
+  /* First check shorter prefixes */
+  while (!(w->lastbits & 1))
+  {
+    w->last.n.pxlen--;
+    w->lastbits >>= 1;
+    w->lastblen--;
+    ASSERT_DIE(w->lastblen);
+  }
+
+  return 1;
+}
+
+net *
+rt_trie_walk_next(struct rt_trie_walker *w, rtable *tab)
+{
+  ASSERT_DIE(w->minlen <= net_max_prefix_length[tab->addr_type]);
+
+  /* Beginning: Start with the root */
+  if (w->last.n.pxlen > net_max_prefix_length[tab->addr_type])
+  {
+    w->last.n.pxlen = w->minlen;
+    struct net_trie *nt = NULL;
+
+    if (w->minlen % 6)
+    {
+      struct rt_parent_net rpn = rt_setup_parent_net(tab, &w->last.n);
+      w->lastbits = rpn.bits;
+      w->lastblen = rpn.blen;
+      nt = SKIP_BACK_OR_NULL(struct net_trie, net, net_find(tab, &rpn.addr.n));
+    }
+    else
+    {
+      nt = SKIP_BACK_OR_NULL(struct net_trie, net, net_find(tab, &w->last.n));
+      w->lastbits = w->lastblen = 0;
+    }
+
+    if (!nt)
+    {
+      /* Nothing to show at all */
+      w->minlen = ~0;
+      return NULL;
+    }
+
+    /* Copy the trie */
+    w->ntn = nt->trie;
+
+    /* Valid node */
+    if (w->lastblen)
+    {
+      /* ... which we have to find */
+      net *found = net_find(tab, &w->last.n);
+      if (found && found->routes)
+	return found;
+    }
+    else if (&nt->net.routes)
+      /* ... which we already do have */
+      return &nt->net;
+
+    /* If the root node is not present, fall through */
+  }
+
+  /* Do the initial move */
+  if ((w->lastblen < 6) && (w->last.n.pxlen < net_max_prefix_length[tab->addr_type]))
+    rt_trie_walk_down(w);
+  else
+    if (!rt_trie_walk_up(w, tab))
+      return NULL;
+
+  while (1)
+  {
+    net *found;
+    switch (w->lastblen)
+    {
+#define CHECK_BIT(N)  ((w->ntn.local##N >> w->lastbits) & 1)
+      case 1:
+	if (CHECK_BIT(1) && (found = net_find(tab, &w->last.n)))
+	  return found;
+
+	rt_trie_walk_down(w);
+	FALLTHROUGH;
+
+      case 2:
+	if (CHECK_BIT(2) && (found = net_find(tab, &w->last.n)))
+	  return found;
+
+	if (w->last.n.pxlen >= net_max_prefix_length[tab->addr_type])
+	  if (rt_trie_walk_up(w, tab))
+	    continue;
+	  else
+	    return NULL;
+
+	rt_trie_walk_down(w);
+	FALLTHROUGH;
+
+      case 3:
+	if (CHECK_BIT(3) && (found = net_find(tab, &w->last.n)))
+	  return found;
+
+	rt_trie_walk_down(w);
+	FALLTHROUGH;
+
+      case 4:
+	if (CHECK_BIT(4) && (found = net_find(tab, &w->last.n)))
+	  return found;
+
+	rt_trie_walk_down(w);
+	FALLTHROUGH;
+
+      case 5:
+	if (CHECK_BIT(5) && (found = net_find(tab, &w->last.n)))
+	  return found;
+
+	rt_trie_walk_down(w);
+	FALLTHROUGH;
+
+      case 6:
+	if (((w->ntn.longer >> w->lastbits) & 1) && (found = net_find(tab, &w->last.n)))
+	{
+	  /* Moving down the trie */
+	  struct net_trie *nt = SKIP_BACK(struct net_trie, net, found);
+	  if (net_trie_node_empty(nt))
+	    /* Node has no children. Staying at lastblen = 6 */
+	    return found;
+
+	  /* Moving a trie node down */
+	  w->ntn = nt->trie;
+	  w->bits_stack[w->bits_stack_used++] = w->lastbits;
+	  w->lastblen = w->lastbits = 0;
+
+	  if (found->routes)
+	    return found;
+
+	  /* No route here, going further down */
+	  rt_trie_walk_down(w);
+	}
+	else if (rt_trie_walk_up(w, tab))
+	  continue;
+	else
+	  return NULL;
+    }
+  }
+}
+
+static void
+net_init_with_trie(rtable *tab, struct fib_node *n)
+{
+  if (n->addr->pxlen == 0)
+    return;
+
+  struct rt_parent_net rpn = rt_setup_parent_net(tab, n->addr);
+  struct net_trie *nt = SKIP_BACK(struct net_trie, net, net_get(tab, &rpn.addr.n));
+
+  switch (rpn.blen)
+  {
+    case 1: nt->trie.local1 |= (1 << rpn.bits); break;
+    case 2: nt->trie.local2 |= (1 << rpn.bits); break;
+    case 3: nt->trie.local3 |= (1 << rpn.bits); break;
+    case 4: nt->trie.local4 |= (1 << rpn.bits); break;
+    case 5: nt->trie.local5 |= (1UL << rpn.bits); break;
+    case 6: nt->trie.longer |= (1ULL << rpn.bits); break;
+    default: bug("Division by six error: got modulo %u", rpn.blen);
+  }
+}
+
+static void
+net_init_with_trie_trie(struct fib *f, struct fib_node *n)
+{ return net_init_with_trie(SKIP_BACK(rtable, fib_trie, f), n); }
+
+static void
+net_init_with_trie_regular(struct fib *f, struct fib_node *n)
+{ return net_init_with_trie(SKIP_BACK(rtable, fib_regular, f), n); }
+
+static int
+net_orphaned(rtable *tab, net *n)
+{
+  /* Has routes */
+  if (n->routes)
+    return 0;
+
+  /* Is not a trie node */
+  if (!rt_has_trie(tab) || (n->n.addr->pxlen % 6))
+    return 1;
+
+  /* No networks under this trie node */
+  return net_trie_node_empty(SKIP_BACK(struct net_trie, net, n));
+}
+
+static void
+net_delete(rtable *tab, net *net)
+{
+  if (!rt_has_trie(tab))
+    return fib_delete(&tab->fib_regular, &net->n);
+
+  DBG("net_delete(%s, %p, %N)\n", tab->name, net, net->n.addr);
+
+  /* We suppose that net_orphaned() has returned 1. */
+  while (net->n.addr->pxlen > 0)
+  {
+    /* Find the parent */
+    struct rt_parent_net rpn = rt_setup_parent_net(tab, net->n.addr);
+    struct net_trie *nt = SKIP_BACK_OR_NULL(struct net_trie, net, net_find(tab, &rpn.addr.n));
+    ASSERT_DIE(nt);
+
+    DBG("... parent node %N trie state: %016lx %08x %04x %02x %x %x\n",
+	nt->net.n.addr,
+	nt->trie.longer, nt->trie.local5, nt->trie.local4, nt->trie.local3,
+	nt->trie.local2, nt->trie.local1);
+
+    /* Fix the trie bits in parent */
+    switch (rpn.blen)
+    {
+      case 1: nt->trie.local1 &= ~(1 << rpn.bits); break;
+      case 2: nt->trie.local2 &= ~(1 << rpn.bits); break;
+      case 3: nt->trie.local3 &= ~(1 << rpn.bits); break;
+      case 4: nt->trie.local4 &= ~(1 << rpn.bits); break;
+      case 5: nt->trie.local5 &= ~(1UL << rpn.bits); break;
+      case 6: nt->trie.longer &= ~(1ULL << rpn.bits); break;
+      default: bug("Division by six error: got modulo %u", rpn.blen);
+    }
+
+    /* Delete self; all needed information is already stored */
+    if (rpn.blen == 6)
+      fib_delete(&tab->fib_trie, &net->n);
+    else
+      fib_delete(&tab->fib_regular, &net->n);
+
+    DBG("... parent node %N trie state: %016lx %08x %04x %02x %x %x\n",
+	nt->net.n.addr,
+	nt->trie.longer, nt->trie.local5, nt->trie.local4, nt->trie.local3,
+	nt->trie.local2, nt->trie.local1);
+
+    /* Move to parent and try once more */
+    if (!net_orphaned(tab, net = &nt->net))
+      break;
+  }
+
+  /* Delete the root node if there is really nothing left */
+  if (!net->n.addr->pxlen && net_orphaned(tab, net))
+    return fib_delete(&tab->fib_trie, &net->n);
+}
+
+static inline net *
+net_route_trie(rtable *t, const net_addr *n)
+{
+  /* First, try the immediate network */
+  net *candidate = net_find_valid(t, n);
+  if (candidate)
+    return candidate;
+
+  /* To get this code done in a reasonable time, we're just going up the trie
+   * by the trie nodes. Anyway, it should be possible to implement binary search.
+   * If you're reading this comment and you think it is worth your time, please do it. */
+
+  net_addr_union nau = { .n = *n };
+  while ((nau.n.pxlen > 0) && !candidate)
+  {
+    /* Check the parent node */
+    struct rt_parent_net rpn = rt_setup_parent_net(t, &nau.n);
+    struct net_trie *nt = SKIP_BACK_OR_NULL(struct net_trie, net, net_find(t, &rpn.addr.n));
+    if (nt)
+    {
+      switch (rpn.blen)
+      {
+#define CHECK_BITS(K) \
+	case K+1:						\
+	  nau.n.pxlen--;					\
+	  if ((nt->trie.local##K >> (rpn.bits >>= 1)) & 1)	\
+	  {							\
+	    net_normalize(&nau.n);				\
+	    if (candidate = net_find_valid(t, &nau.n))		\
+	      return candidate;					\
+	  }							\
+	FALLTHROUGH;
+
+	CHECK_BITS(5);
+	CHECK_BITS(4);
+	CHECK_BITS(3);
+	CHECK_BITS(2);
+	CHECK_BITS(1);
+#undef CHECK_BITS
+	case 1:
+	  if (rte_is_valid(nt->net.routes))
+	    return &nt->net;
+	  else
+	    break;
+
+	default:
+	  bug("Failed to walk the table trie: invalid blen %u", rpn.blen);
+      }
+      nau.n = *nt->net.n.addr;
+    }
+    else
+    {
+      nau.n.pxlen -= rpn.blen;
+      net_normalize(&nau.n);
+    }
+  }
 
   return NULL;
 }
@@ -246,7 +602,7 @@ net_route_ip6_sadr_fib(rtable *t, const net_addr_ip6_sadr *n0)
     /* We need to do dst first matching. Since sadr addresses are hashed on dst
        prefix only, find the hash table chain and go through it to find the
        match with the longest matching src prefix. */
-    for (struct fib_node *fn = fib_get_chain(&t->fib, (net_addr *) &n); fn; fn = fn->next)
+    for (struct fib_node *fn = fib_get_chain(&t->fib_regular, (net_addr *) &n); fn; fn = fn->next)
     {
       net_addr_ip6_sadr *a = (void *) fn->addr;
 
@@ -276,48 +632,23 @@ net *
 net_route(rtable *tab, const net_addr *n)
 {
   ASSERT(tab->addr_type == n->type);
+  switch (n->type)
+  {
+    case NET_IP4:
+    case NET_VPN4:
+    case NET_IP6:
+    case NET_VPN6:
+      return net_route_trie(tab, n);
 
-  if (tab->trie)
-    switch (n->type)
-    {
-      case NET_IP4:	return net_route_ip4_trie(tab, (net_addr_ip4 *) n);
-      case NET_VPN4:	return net_route_vpn4_trie(tab, (net_addr_vpn4 *) n);
-      case NET_IP6:	return net_route_ip6_trie(tab, (net_addr_ip6 *) n);
-      case NET_VPN6:	return net_route_vpn6_trie(tab, (net_addr_vpn6 *) n);
-      case NET_IP6_SADR:return net_route_ip6_sadr_trie(tab, (net_addr_ip6_sadr *) n);
-      default:		return NULL;
-    }
-  else
-    switch (n->type)
-    {
-      case NET_IP4:
-      case NET_VPN4:
-	FIB_WALK_TO_ROOT(&tab->fib, (net_addr_ip4 *) n, ip4)
-	{
-	  net *nn = SKIP_BACK(net, n, FIB_WALK_NODE);
-	  if (nn && rte_is_valid(nn->routes))
-	    return nn;
-	}
-	return NULL;
+    case NET_IP6_SADR:
+      return net_route_ip6_sadr_fib (tab, (net_addr_ip6_sadr *) n);
 
-      case NET_IP6:
-      case NET_VPN6:
-	FIB_WALK_TO_ROOT(&tab->fib, (net_addr_ip6 *) n, ip6)
-	{
-	  net *nn = SKIP_BACK(net, n, FIB_WALK_NODE);
-	  if (nn && rte_is_valid(nn->routes))
-	    return nn;
-	}
-	return NULL;
-
-      case NET_IP6_SADR:
-	return net_route_ip6_sadr_fib (tab, (net_addr_ip6_sadr *) n);
-
-      default:
-	return NULL;
+    default:
+      return NULL;
   }
 }
 
+#if 0
 
 static int
 net_roa_check_ip4_trie(rtable *tab, const net_addr_ip4 *px, u32 asn)
@@ -347,6 +678,8 @@ net_roa_check_ip4_trie(rtable *tab, const net_addr_ip4 *px, u32 asn)
   return anything ? ROA_INVALID : ROA_UNKNOWN;
 }
 
+#endif
+
 static int
 net_roa_check_ip4_fib(rtable *tab, const net_addr_ip4 *px, u32 asn)
 {
@@ -356,7 +689,7 @@ net_roa_check_ip4_fib(rtable *tab, const net_addr_ip4 *px, u32 asn)
 
   while (1)
   {
-    for (fn = fib_get_chain(&tab->fib, (net_addr *) &n); fn; fn = fn->next)
+    for (fn = fib_get_chain(&tab->fib_regular, (net_addr *) &n); fn; fn = fn->next)
     {
       net_addr_roa4 *roa = (void *) fn->addr;
       net *r = SKIP_BACK(net, n, fn);
@@ -378,6 +711,8 @@ net_roa_check_ip4_fib(rtable *tab, const net_addr_ip4 *px, u32 asn)
 
   return anything ? ROA_INVALID : ROA_UNKNOWN;
 }
+
+#if 0
 
 static int
 net_roa_check_ip6_trie(rtable *tab, const net_addr_ip6 *px, u32 asn)
@@ -407,6 +742,8 @@ net_roa_check_ip6_trie(rtable *tab, const net_addr_ip6 *px, u32 asn)
   return anything ? ROA_INVALID : ROA_UNKNOWN;
 }
 
+#endif
+
 static int
 net_roa_check_ip6_fib(rtable *tab, const net_addr_ip6 *px, u32 asn)
 {
@@ -416,7 +753,7 @@ net_roa_check_ip6_fib(rtable *tab, const net_addr_ip6 *px, u32 asn)
 
   while (1)
   {
-    for (fn = fib_get_chain(&tab->fib, (net_addr *) &n); fn; fn = fn->next)
+    for (fn = fib_get_chain(&tab->fib_regular, (net_addr *) &n); fn; fn = fn->next)
     {
       net_addr_roa6 *roa = (void *) fn->addr;
       net *r = SKIP_BACK(net, n, fn);
@@ -459,16 +796,20 @@ net_roa_check(rtable *tab, const net_addr *n, u32 asn)
 {
   if ((tab->addr_type == NET_ROA4) && (n->type == NET_IP4))
   {
+#if 0
     if (tab->trie)
       return net_roa_check_ip4_trie(tab, (const net_addr_ip4 *) n, asn);
     else
+#endif
       return net_roa_check_ip4_fib (tab, (const net_addr_ip4 *) n, asn);
   }
   else if ((tab->addr_type == NET_ROA6) && (n->type == NET_IP6))
   {
+#if 0
     if (tab->trie)
       return net_roa_check_ip6_trie(tab, (const net_addr_ip6 *) n, asn);
     else
+#endif
       return net_roa_check_ip6_fib (tab, (const net_addr_ip6 *) n, asn);
   }
   else
@@ -1656,7 +1997,7 @@ rt_examine(rtable *t, net_addr *a, struct channel *c, const struct filter *filte
 void
 rt_refresh_begin(rtable *t, struct channel *c)
 {
-  FIB_WALK(&t->fib, net, n)
+  TAB_FIB_WALK(t, net, n)
     {
       rte *e;
       for (e = n->routes; e; e = e->next)
@@ -1679,7 +2020,7 @@ rt_refresh_end(rtable *t, struct channel *c)
 {
   int prune = 0;
 
-  FIB_WALK(&t->fib, net, n)
+  TAB_FIB_WALK(t, net, n)
     {
       rte *e;
       for (e = n->routes; e; e = e->next)
@@ -1700,7 +2041,7 @@ rt_modify_stale(rtable *t, struct channel *c)
 {
   int prune = 0;
 
-  FIB_WALK(&t->fib, net, n)
+  TAB_FIB_WALK(t, net, n)
     {
       rte *e;
       for (e = n->routes; e; e = e->next)
@@ -1743,9 +2084,10 @@ rt_dump(rtable *t)
 {
   debug("Dump of routing table <%s>\n", t->name);
 #ifdef DEBUGGING
-  fib_check(&t->fib);
+  fib_check(&t->fib_regular);
+  if (rt_has_trie(t)) fib_check(&t->fib_trie);
 #endif
-  FIB_WALK(&t->fib, net, n)
+  TAB_FIB_WALK(t, net, n)
     {
       rte *e;
       for(e=n->routes; e; e=e->next)
@@ -2057,15 +2399,7 @@ rt_setup(pool *pp, struct rtable_config *cf)
   t->config = cf;
   t->addr_type = cf->addr_type;
 
-  fib_init(&t->fib, p, t->addr_type, sizeof(net), OFFSETOF(net, n), 0, NULL);
-
-  if (cf->trie_used)
-  {
-    t->trie = f_new_trie(lp_new_default(p), 0);
-    t->trie->ipv4 = net_val_match(t->addr_type, NB_IP4 | NB_VPN4 | NB_ROA4);
-
-    t->fib.init = net_init_with_trie;
-  }
+  fib_init(&t->fib_regular, p, t->addr_type, sizeof(net), OFFSETOF(net, n), 0, NULL);
 
   init_list(&t->channels);
   init_list(&t->flowspec_links);
@@ -2073,6 +2407,13 @@ rt_setup(pool *pp, struct rtable_config *cf)
 
   if (!(t->internal = cf->internal))
   {
+    if (net_val_match(t->addr_type, NB_IP | NB_VPN)) /* TODO: add  | NB_ROA | NB_IP6_SADR */
+    {
+      fib_init(&t->fib_trie, p, t->addr_type, sizeof(struct net_trie), OFFSETOF(struct net_trie, net.n), 0, NULL);
+      t->fib_regular.init = net_init_with_trie_regular;
+      t->fib_trie.init = net_init_with_trie_trie;
+    }
+
     hmap_init(&t->id_map, p, 1024);
     hmap_set(&t->id_map, 0);
 
@@ -2132,7 +2473,8 @@ rt_prune_table(rtable *tab)
 
   DBG("Pruning route table %s\n", tab->name);
 #ifdef DEBUGGING
-  fib_check(&tab->fib);
+  fib_check(&tab->fib_regular);
+  if (rt_has_trie(tab)) fib_check(&tab->fib_trie);
 #endif
 
   if (tab->prune_state == 0)
@@ -2145,18 +2487,11 @@ rt_prune_table(rtable *tab)
       if (c->channel_state == CS_FLUSHING)
 	c->flush_active = 1;
 
-    FIB_ITERATE_INIT(fit, &tab->fib);
+    FIB_ITERATE_INIT(fit, &tab->fib_regular);
     tab->prune_state = 2;
 
     tab->gc_counter = 0;
     tab->gc_time = current_time();
-
-    if (tab->prune_trie)
-    {
-      /* Init prefix trie pruning */
-      tab->trie_new = f_new_trie(lp_new_default(tab->rp), 0);
-      tab->trie_new->ipv4 = tab->trie->ipv4;
-    }
   }
 
 again:
@@ -2191,58 +2526,29 @@ again:
 	  }
       }
 
-      if (!n->routes)		/* Orphaned FIB entry */
+      if (net_orphaned(tab, n))		/* Orphaned FIB entry */
 	{
 	  FIB_ITERATE_PUT(fit);
-	  fib_delete(&tab->fib, &n->n);
+	  net_delete(tab, n);
 	  goto again;
 	}
-
-      if (tab->trie_new)
-      {
-	trie_add_prefix(tab->trie_new, n->n.addr, n->n.addr->pxlen, n->n.addr->pxlen);
-	limit--;
-      }
     }
   FIB_ITERATE_END;
 
+  if (rt_has_trie(tab) && (fit->fib == &tab->fib_regular))
+  {
+    FIB_ITERATE_INIT(fit, &tab->fib_trie);
+    goto again;
+  }
+
+
 #ifdef DEBUGGING
-  fib_check(&tab->fib);
+  fib_check(&tab->fib_regular);
+  if (rt_has_trie(tab)) fib_check(&tab->fib_trie);
 #endif
 
   /* state change 2->0, 3->1 */
   tab->prune_state &= 1;
-
-  if (tab->trie_new)
-  {
-    /* Finish prefix trie pruning */
-
-    if (!tab->trie_lock_count)
-    {
-      rfree(tab->trie->lp);
-    }
-    else
-    {
-      ASSERT(!tab->trie_old);
-      tab->trie_old = tab->trie;
-      tab->trie_old_lock_count = tab->trie_lock_count;
-      tab->trie_lock_count = 0;
-    }
-
-    tab->trie = tab->trie_new;
-    tab->trie_new = NULL;
-    tab->prune_trie = 0;
-  }
-  else
-  {
-    /* Schedule prefix trie pruning */
-    if (tab->trie && !tab->trie_old && (tab->trie->prefix_count > (2 * tab->fib.entries)))
-    {
-      /* state change 0->1, 2->3 */
-      tab->prune_state |= 1;
-      tab->prune_trie = 1;
-    }
-  }
 
   if (tab->prune_state > 0)
     ev_schedule(tab->rt_event);
@@ -2259,71 +2565,6 @@ again:
       }
 
   return;
-}
-
-/**
- * rt_lock_trie - lock a prefix trie of a routing table
- * @tab: routing table with prefix trie to be locked
- *
- * The prune loop may rebuild the prefix trie and invalidate f_trie_walk_state
- * structures. Therefore, asynchronous walks should lock the prefix trie using
- * this function. That allows the prune loop to rebuild the trie, but postpones
- * its freeing until all walks are done (unlocked by rt_unlock_trie()).
- *
- * Return a current trie that will be locked, the value should be passed back to
- * rt_unlock_trie() for unlocking.
- *
- */
-struct f_trie *
-rt_lock_trie(rtable *tab)
-{
-  ASSERT(tab->trie);
-
-  tab->trie_lock_count++;
-  return tab->trie;
-}
-
-/**
- * rt_unlock_trie - unlock a prefix trie of a routing table
- * @tab: routing table with prefix trie to be locked
- * @trie: value returned by matching rt_lock_trie()
- *
- * Done for trie locked by rt_lock_trie() after walk over the trie is done.
- * It may free the trie and schedule next trie pruning.
- */
-void
-rt_unlock_trie(rtable *tab, struct f_trie *trie)
-{
-  ASSERT(trie);
-
-  if (trie == tab->trie)
-  {
-    /* Unlock the current prefix trie */
-    ASSERT(tab->trie_lock_count);
-    tab->trie_lock_count--;
-  }
-  else if (trie == tab->trie_old)
-  {
-    /* Unlock the old prefix trie */
-    ASSERT(tab->trie_old_lock_count);
-    tab->trie_old_lock_count--;
-
-    /* Free old prefix trie that is no longer needed */
-    if (!tab->trie_old_lock_count)
-    {
-      rfree(tab->trie_old->lp);
-      tab->trie_old = NULL;
-
-      /* Kick prefix trie pruning that was postponed */
-      if (tab->trie && (tab->trie->prefix_count > (2 * tab->fib.entries)))
-      {
-	tab->prune_trie = 1;
-	rt_schedule_prune(tab);
-      }
-    }
-  }
-  else
-    log(L_BUG "Invalid arg to rt_unlock_trie()");
 }
 
 
@@ -2529,7 +2770,6 @@ rt_flowspec_check(rtable *tab_ip, rtable *tab_flow, const net_addr *n, rta *a, i
 {
   ASSERT(rt_is_ip(tab_ip));
   ASSERT(rt_is_flow(tab_flow));
-  ASSERT(tab_ip->trie);
 
   /* RFC 8955 6. a) Flowspec has defined dst prefix */
   if (!net_flow_has_dst_prefix(n))
@@ -2580,12 +2820,10 @@ rt_flowspec_check(rtable *tab_ip, rtable *tab_flow, const net_addr *n, rta *a, i
     return 0;
 
   /* RFC 8955 6. c) More-specific routes are from the same AS as the best-match route */
-  TRIE_WALK(tab_ip->trie, subnet, &dst)
+  struct rt_trie_walker rtw;
+  rt_trie_walk_init(&rtw, &dst);
+  for (net *nc; nc = rt_trie_walk_next(&rtw, tab_ip); )
   {
-    net *nc = net_find_valid(tab_ip, &subnet);
-    if (!nc)
-      continue;
-
     rte *rc = nc->routes;
     if (rc->attrs->source != RTS_BGP)
       return 0;
@@ -2593,7 +2831,6 @@ rt_flowspec_check(rtable *tab_ip, rtable *tab_flow, const net_addr *n, rta *a, i
     if (rta_get_first_asn(rc->attrs) != asn_b)
       return 0;
   }
-  TRIE_WALK_END;
 
   return 1;
 }
@@ -2720,7 +2957,7 @@ rt_next_hop_update(rtable *tab)
 
   if (tab->nhu_state == NHU_SCHEDULED)
     {
-      FIB_ITERATE_INIT(fit, &tab->fib);
+      FIB_ITERATE_INIT(fit, &tab->fib_regular);
       tab->nhu_state = NHU_RUNNING;
 
       if (tab->flowspec_trie)
@@ -2738,6 +2975,13 @@ rt_next_hop_update(rtable *tab)
       max_feed -= rt_next_hop_update_net(tab, n);
     }
   FIB_ITERATE_END;
+
+  if (rt_has_trie(tab) && (fit->fib == &tab->fib_regular))
+  {
+    FIB_ITERATE_INIT(fit, &tab->fib_trie);
+    ev_schedule(tab->rt_event);
+    return;
+  }
 
   /* State change:
    *   NHU_DIRTY   -> NHU_SCHEDULED
@@ -2817,8 +3061,7 @@ static int
 rt_reconfigure(rtable *tab, struct rtable_config *new, struct rtable_config *old)
 {
   if ((new->addr_type != old->addr_type) ||
-      (new->sorted != old->sorted) ||
-      (new->trie_used != old->trie_used))
+      (new->sorted != old->sorted))
     return 0;
 
   DBG("\t%s: same\n", new->name);
@@ -2916,7 +3159,7 @@ rt_feed_channel(struct channel *c)
 
   if (!c->feed_active)
     {
-      FIB_ITERATE_INIT(fit, &c->table->fib);
+      FIB_ITERATE_INIT(fit, &c->table->fib_regular);
       c->feed_active = 1;
     }
 
@@ -2957,6 +3200,13 @@ rt_feed_channel(struct channel *c)
 	  }
     }
   FIB_ITERATE_END;
+
+  if (rt_has_trie(c->table) && fit->fib == &c->table->fib_regular)
+  {
+    FIB_ITERATE_INIT(fit, &c->table->fib_trie);
+    return 0;
+  }
+
 
 done:
   c->feed_active = 0;
@@ -3042,7 +3292,7 @@ rte_update_in(struct channel *c, const net_addr *n, rte *new, struct rte_src *sr
       goto drop_withdraw;
 
     if (!net->routes)
-      fib_delete(&tab->fib, &net->n);
+      fib_delete(&tab->fib_regular, &net->n);
 
     return 1;
   }
@@ -3080,7 +3330,7 @@ drop_update:
   rte_free(new);
 
   if (!net->routes)
-    fib_delete(&tab->fib, &net->n);
+    fib_delete(&tab->fib_regular, &net->n);
 
   return 0;
 
@@ -3101,7 +3351,7 @@ rt_reload_channel(struct channel *c)
 
   if (!c->reload_active)
   {
-    FIB_ITERATE_INIT(fit, &tab->fib);
+    FIB_ITERATE_INIT(fit, &tab->fib_regular);
     c->reload_active = 1;
   }
 
@@ -3153,7 +3403,7 @@ rt_prune_sync(rtable *t, int all)
 {
   struct fib_iterator fit;
 
-  FIB_ITERATE_INIT(&fit, &t->fib);
+  FIB_ITERATE_INIT(&fit, &t->fib_regular);
 
 again:
   FIB_ITERATE_START(&fit, net, n)
@@ -3175,7 +3425,7 @@ again:
     if (all || !n->routes)
     {
       FIB_ITERATE_PUT(&fit);
-      fib_delete(&t->fib, &n->n);
+      fib_delete(&t->fib_regular, &n->n);
       goto again;
     }
   }
@@ -3244,7 +3494,7 @@ rte_update_out(struct channel *c, const net_addr *n, rte *new, rte *old0, int re
       goto drop_withdraw;
 
     if (!net->routes)
-      fib_delete(&tab->fib, &net->n);
+      fib_delete(&tab->fib_regular, &net->n);
 
     return 1;
   }
