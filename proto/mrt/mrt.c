@@ -577,7 +577,7 @@ static void
 mrt_table_dump_free(struct mrt_table_dump_state *s)
 {
   if (s->table_open)
-    FIB_ITERATE_UNLINK(&s->fit, &s->table->fib);
+    FIB_ITERATE_UNLINK(&s->fit);
 
   if (s->table)
     rt_unlock_table(s->table);
@@ -613,7 +613,7 @@ mrt_table_dump_step(struct mrt_table_dump_state *s)
     s->table_open = 1;
 
   step:
-    FIB_ITERATE_START(&s->table->fib, &s->fit, net, n)
+    FIB_ITERATE_START(&s->fit, net, n)
     {
       if (s->max < 0)
       {

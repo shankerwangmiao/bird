@@ -206,12 +206,12 @@ static inline int rip_is_ng(struct rip_proto *p)
 { return ! p->rip2; }
 
 static inline void
-rip_reset_tx_session(struct rip_proto *p, struct rip_iface *ifa)
+rip_reset_tx_session(struct rip_proto *p UNUSED, struct rip_iface *ifa)
 {
   if (ifa->tx_active)
   {
-    FIB_ITERATE_UNLINK(&ifa->tx_fit, &p->rtable);
-    FIB_ITERATE_UNLINK(&ifa->tx_done, &p->rtable);
+    FIB_ITERATE_UNLINK(&ifa->tx_fit);
+    FIB_ITERATE_UNLINK(&ifa->tx_done);
     ifa->tx_active = 0;
   }
 }

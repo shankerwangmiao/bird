@@ -527,7 +527,7 @@ rip_send_response(struct rip_proto *p, struct rip_iface *ifa)
     rip_fill_update_hdr(pkt, ifa->tx_flush, ifa->tx_seqnum);
   }
 
-  FIB_ITERATE_START(&p->rtable, &ifa->tx_fit, struct rip_entry, en)
+  FIB_ITERATE_START(&ifa->tx_fit, struct rip_entry, en)
   {
     /* Dummy entries */
     if (!en->valid)
@@ -611,7 +611,7 @@ rip_send_response(struct rip_proto *p, struct rip_iface *ifa)
   ifa->tx_active = 0;
 
   /* Unlink second iterator */
-  FIB_ITERATE_UNLINK(&ifa->tx_done, &p->rtable);
+  FIB_ITERATE_UNLINK(&ifa->tx_done);
 
   return 0;
 
@@ -836,7 +836,7 @@ rip_receive_ack(struct rip_proto *p, struct rip_iface *ifa, struct rip_packet *p
   }
 
   /* Move acked position */
-  FIB_ITERATE_COPY(&ifa->tx_done, &ifa->tx_fit, &p->rtable);
+  FIB_ITERATE_COPY(&ifa->tx_done, &ifa->tx_fit);
 
   /* Packet is no longer pending */
   ifa->tx_pending = 0;
@@ -867,7 +867,7 @@ rip_rxmt_timeout(timer *t)
   if (ifa->tx_pending)
   {
     /* Revert to acked position */
-    FIB_ITERATE_COPY(&ifa->tx_fit, &ifa->tx_done, &p->rtable);
+    FIB_ITERATE_COPY(&ifa->tx_fit, &ifa->tx_done);
 
     /* Packet is no longer pending */
     ifa->tx_pending = 0;

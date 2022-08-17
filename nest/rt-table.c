@@ -2160,7 +2160,7 @@ rt_prune_table(rtable *tab)
   }
 
 again:
-  FIB_ITERATE_START(&tab->fib, fit, net, n)
+  FIB_ITERATE_START(fit, net, n)
     {
       rte *e;
 
@@ -2727,7 +2727,7 @@ rt_next_hop_update(rtable *tab)
 	rt_flowspec_reset_trie(tab);
     }
 
-  FIB_ITERATE_START(&tab->fib, fit, net, n)
+  FIB_ITERATE_START(fit, net, n)
     {
       if (max_feed <= 0)
 	{
@@ -2920,7 +2920,7 @@ rt_feed_channel(struct channel *c)
       c->feed_active = 1;
     }
 
-  FIB_ITERATE_START(&c->table->fib, fit, net, n)
+  FIB_ITERATE_START(fit, net, n)
     {
       rte *e = n->routes;
       if (max_feed <= 0)
@@ -2976,7 +2976,7 @@ rt_feed_channel_abort(struct channel *c)
   if (c->feed_active)
     {
       /* Unlink the iterator */
-      fit_get(&c->table->fib, &c->feed_fit);
+      FIB_ITERATE_UNLINK(&c->feed_fit);
       c->feed_active = 0;
     }
 }
@@ -3120,11 +3120,11 @@ rt_reload_channel(struct channel *c)
 
     c->reload_next_rte = NULL;
 
-    FIB_ITERATE_START(&tab->fib, fit, net, n)
+    FIB_ITERATE_START(fit, net, n)
     {
       if (c->reload_next_rte = n->routes)
       {
-	FIB_ITERATE_PUT_NEXT(fit, &tab->fib);
+	FIB_ITERATE_PUT_NEXT(fit);
 	break;
       }
     }
@@ -3142,7 +3142,7 @@ rt_reload_channel_abort(struct channel *c)
   if (c->reload_active)
   {
     /* Unlink the iterator */
-    fit_get(&c->in_table->fib, &c->reload_fit);
+    FIB_ITERATE_UNLINK(&c->reload_fit);
     c->reload_next_rte = NULL;
     c->reload_active = 0;
   }
@@ -3156,7 +3156,7 @@ rt_prune_sync(rtable *t, int all)
   FIB_ITERATE_INIT(&fit, &t->fib);
 
 again:
-  FIB_ITERATE_START(&t->fib, &fit, net, n)
+  FIB_ITERATE_START(&fit, net, n)
   {
     rte *e, **ee = &n->routes;
 

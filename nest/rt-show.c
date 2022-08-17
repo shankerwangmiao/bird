@@ -219,7 +219,7 @@ rt_show_cleanup(struct cli *c)
 
   /* Unlink the iterator */
   if (d->table_open && !d->trie_walk)
-    fit_get(&d->tab->table->fib, &d->fit);
+    fit_get(&d->fit);
 
   if (d->walk_lock)
     rt_unlock_trie(d->tab->table, d->walk_lock);
@@ -239,7 +239,6 @@ rt_show_cont(struct cli *c)
 #else
   unsigned max = 64;
 #endif
-  struct fib *fib = &tab->fib;
   struct fib_iterator *it = &d->fit;
 
   if (d->running_on_config && (d->running_on_config != config))
@@ -300,7 +299,7 @@ rt_show_cont(struct cli *c)
   else
   {
     /* fib-based walk */
-    FIB_ITERATE_START(fib, it, net, n)
+    FIB_ITERATE_START(it, net, n)
     {
       if ((d->addr_mode == RSD_ADDR_IN) && (!net_in_netX(n->n.addr, d->addr)))
 	goto next;

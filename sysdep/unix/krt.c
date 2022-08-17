@@ -367,7 +367,7 @@ krt_learn_prune(struct krt_proto *p)
 
   FIB_ITERATE_INIT(&fit, fib);
 again:
-  FIB_ITERATE_START(fib, &fit, net, n)
+  FIB_ITERATE_START(&fit, net, n)
     {
       rte *e, **ee, *best, **pbest, *old_best;
 

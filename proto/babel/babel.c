@@ -227,7 +227,7 @@ babel_expire_routes_(struct babel_proto *p, struct fib *rtable)
   FIB_ITERATE_INIT(&fit, rtable);
 
 loop:
-  FIB_ITERATE_START(rtable, &fit, struct babel_entry, e)
+  FIB_ITERATE_START(&fit, struct babel_entry, e)
   {
     int changed = 0;
 

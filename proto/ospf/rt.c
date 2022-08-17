@@ -2000,7 +2000,7 @@ rt_sync(struct ospf_proto *p)
   DBG("Now syncing my rt table with nest's\n");
   FIB_ITERATE_INIT(&fit, fib);
 again1:
-  FIB_ITERATE_START2(fib, &fit, ort, fn, nf)
+  FIB_ITERATE_START2(&fit, ort, fn, nf)
   {
     /* Sanity check of next-hop addresses, failure should not happen */
     if (nf->n.type)
@@ -2108,7 +2108,7 @@ again1:
     /* Cleanup ASBR hash tables */
     FIB_ITERATE_INIT(&fit, &oa->rtr);
 again2:
-    FIB_ITERATE_START2(&oa->rtr, &fit, ort, fn, nf)
+    FIB_ITERATE_START2(&fit, ort, fn, nf)
     {
       if (!nf->n.type)
       {

@@ -464,6 +464,7 @@ fit_init(struct fib_iterator *i, struct fib *f)
 {
   unsigned h;
   struct fib_node *n;
+  i->fib = f;
 
   i->efef = 0xff;
   for(h=0; h<f->hash_size; h++)
@@ -482,10 +483,11 @@ fit_init(struct fib_iterator *i, struct fib *f)
 }
 
 struct fib_node *
-fit_get(struct fib *f, struct fib_iterator *i)
+fit_get(struct fib_iterator *i)
 {
   struct fib_node *n;
   struct fib_iterator *j, *k;
+  struct fib *f = i->fib;
 
   if (!i->prev)
     {
@@ -523,8 +525,10 @@ fit_put(struct fib_iterator *i, struct fib_node *n)
 }
 
 void
-fit_put_next(struct fib *f, struct fib_iterator *i, struct fib_node *n, uint hpos)
+fit_put_next(struct fib_iterator *i, struct fib_node *n, uint hpos)
 {
+  struct fib *f = i->fib;
+
   if (n = n->next)
     goto found;
 
@@ -550,11 +554,12 @@ fit_put_end(struct fib_iterator *i)
 }
 
 void
-fit_copy(struct fib *f, struct fib_iterator *dst, struct fib_iterator *src)
+fit_copy(struct fib_iterator *dst, struct fib_iterator *src)
 {
-  struct fib_iterator *nxt = src->next;
+  ASSERT_DIE(dst->fib == src->fib);
 
-  fit_get(f, dst);
+  struct fib_iterator *nxt = src->next;
+  fit_get(dst);
 
   if (!src->prev)
   {

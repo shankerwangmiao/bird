@@ -909,7 +909,7 @@ rip_timer(timer *t)
   FIB_ITERATE_INIT(&fit, &p->rtable);
 
   loop:
-  FIB_ITERATE_START(&p->rtable, &fit, struct rip_entry, en)
+  FIB_ITERATE_START(&fit, struct rip_entry, en)
   {
     struct rip_rte *rt, **rp;
     int changed = 0;
@@ -937,7 +937,7 @@ rip_timer(timer *t)
        * rip_rt_notify() -> p->rtable change, invalidating hidden variables.
        */
 
-      FIB_ITERATE_PUT_NEXT(&fit, &p->rtable);
+      FIB_ITERATE_PUT_NEXT(&fit);
       rip_announce_rte(p, en);
       goto loop;
     }

@@ -524,7 +524,7 @@ radv_prune_routes(struct radv_proto *p)
   FIB_ITERATE_INIT(&fit, &p->routes);
 
 again:
-  FIB_ITERATE_START(&p->routes, &fit, struct radv_route, rt)
+  FIB_ITERATE_START(&fit, struct radv_route, rt)
   {
     if (!rt->valid)
     {

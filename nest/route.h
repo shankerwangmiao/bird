@@ -49,6 +49,7 @@ struct fib_iterator {			/* See lib/slists.h for an explanation */
   byte efef;				/* 0xff to distinguish between iterator and node */
   byte pad[3];
   struct fib_node *node;		/* Or NULL if freshly merged */
+  struct fib *fib;			/* The fib we're currently iterating */
   uint hash;
 };
 
@@ -128,11 +129,11 @@ void fib_check(struct fib *);		/* Consistency check for debugging */
 #define FIB_ROUTE(f, a, t, n) SKIP_BACK_OR_NULL(t, n, fib_route((f), (a)))
 
 void fit_init(struct fib_iterator *, struct fib *); /* Internal functions, don't call */
-struct fib_node *fit_get(struct fib *, struct fib_iterator *);
+struct fib_node *fit_get(struct fib_iterator *);
 void fit_put(struct fib_iterator *, struct fib_node *);
-void fit_put_next(struct fib *f, struct fib_iterator *i, struct fib_node *n, uint hpos);
+void fit_put_next(struct fib_iterator *i, struct fib_node *n, uint hpos);
 void fit_put_end(struct fib_iterator *i);
-void fit_copy(struct fib *f, struct fib_iterator *dst, struct fib_iterator *src);
+void fit_copy(struct fib_iterator *dst, struct fib_iterator *src);
 
 
 #define FIB_WALK2(fib, type, member, z) do {			\
@@ -148,9 +149,10 @@ void fit_copy(struct fib *f, struct fib_iterator *dst, struct fib_iterator *src)
 
 #define FIB_ITERATE_INIT(it, fib) fit_init(it, fib)
 
-#define FIB_ITERATE_START2(fib, it, type, member, z) do {		\
-	struct fib_node *fn_ = fit_get(fib, it);		\
-	uint count_ = (fib)->hash_size;				\
+#define FIB_ITERATE_START2(it, type, member, z) do {		\
+	struct fib_node *fn_ = fit_get(it);			\
+	struct fib *fib_ = (it)->fib;				\
+	uint count_ = (fib_)->hash_size;			\
 	uint hpos_ = (it)->hash;				\
 	type *z;						\
 	for(;;) {						\
@@ -158,24 +160,24 @@ void fit_copy(struct fib *f, struct fib_iterator *dst, struct fib_iterator *src)
 	    {							\
 	       if (++hpos_ >= count_)				\
 		 break;						\
-	       fn_ = (fib)->hash_table[hpos_];			\
+	       fn_ = (fib_)->hash_table[hpos_];			\
 	       continue;					\
 	    }							\
 	  z = SKIP_BACK_OR_NULL(type, member, fn_);
 
-#define FIB_ITERATE_START(fib, it, type, z) FIB_ITERATE_START2(fib, it, type, n, z)
+#define FIB_ITERATE_START(it, type, z) FIB_ITERATE_START2(it, type, n, z)
 
 #define FIB_ITERATE_END fn_ = fn_->next; } } while(0)
 
 #define FIB_ITERATE_PUT(it) fit_put(it, fn_)
 
-#define FIB_ITERATE_PUT_NEXT(it, fib) fit_put_next(fib, it, fn_, hpos_)
+#define FIB_ITERATE_PUT_NEXT(it) fit_put_next(it, fn_, hpos_)
 
 #define FIB_ITERATE_PUT_END(it) fit_put_end(it)
 
-#define FIB_ITERATE_UNLINK(it, fib) fit_get(fib, it)
+#define FIB_ITERATE_UNLINK(it) (fit_get(it), (it)->fib = NULL)
 
-#define FIB_ITERATE_COPY(dst, src, fib) fit_copy(fib, dst, src)
+#define FIB_ITERATE_COPY(dst, src) fit_copy(dst, src)
 
 
 /*
