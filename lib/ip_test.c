@@ -265,6 +265,48 @@ t_ip6_getbits(void)
   return 1;
 }
 
+static int
+t_ip4_addbit(void)
+{
+  ip4_addr t = ip4_build(0, 0, 0, 0);
+  for (int i=0; i<32; i++)
+    bt_assert(ip4_equal(ip4_from_u32(1UL<<i), ip4_addbit(t, 31-i)));
+
+  t = ip4_build(255, 255, 255, 255);
+  for (int i=0; i<32; i++)
+    bt_assert(ip4_equal(ip4_from_u32((1UL<<i) - 1), ip4_addbit(t, 31-i)));
+
+  t = ip4_build(0x55, 0xaa, 0x33, 0xcc);
+  bt_assert(ip4_equal(ip4_from_u32(0x55aa33cd), ip4_addbit(t, 31)));
+  bt_assert(ip4_equal(ip4_from_u32(0x55aa340c), ip4_addbit(t, 25)));
+
+  return 1;
+}
+
+static int
+t_ip6_addbit(void)
+{
+  ip6_addr t = ip6_build(0, 0, 0, 0);
+  for (int i=0; i<32; i++)
+  {
+    bt_assert(ip6_equal(ip6_build((1UL<<i), 0, 0, 0), ip6_addbit(t, 31-i)));
+    bt_assert(ip6_equal(ip6_build(0, (1UL<<i), 0, 0), ip6_addbit(t, 63-i)));
+    bt_assert(ip6_equal(ip6_build(0, 0, (1UL<<i), 0), ip6_addbit(t, 95-i)));
+    bt_assert(ip6_equal(ip6_build(0, 0, 0, (1UL<<i)), ip6_addbit(t, 127-i)));
+  }
+
+  t = ip6_build(0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff);
+  for (int i=0; i<32; i++)
+  {
+    bt_assert(ip6_equal(ip6_build((1UL<<i)-1, 0xffffffff, 0xffffffff, 0xffffffff), ip6_addbit(t, 31-i)));
+    bt_assert(ip6_equal(ip6_build(0, (1UL<<i)-1, 0xffffffff, 0xffffffff), ip6_addbit(t, 63-i)));
+    bt_assert(ip6_equal(ip6_build(0, 0, (1UL<<i)-1, 0xffffffff), ip6_addbit(t, 95-i)));
+    bt_assert(ip6_equal(ip6_build(0, 0, 0, (1UL<<i)-1), ip6_addbit(t, 127-i)));
+  }
+
+  return 1;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -278,6 +320,8 @@ main(int argc, char *argv[])
   bt_test_suite(t_ip6_prefix_equal, "Testing ip6_prefix_equal()");
   bt_test_suite(t_ip4_getbits, "Checking getting bits from IPv4");
   bt_test_suite(t_ip6_getbits, "Checking getting bits from IPv6");
+  bt_test_suite(t_ip4_addbit, "Checking adding bits to IPv4");
+  bt_test_suite(t_ip6_addbit, "Checking adding bits to IPv6");
 
   return bt_exit_value();
 }

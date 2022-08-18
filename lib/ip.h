@@ -339,6 +339,17 @@ static inline ip4_addr ip4_setbits(ip4_addr a, uint pos, uint val)
 static inline ip6_addr ip6_setbits(ip6_addr a, uint pos, uint val)
 { a.addr[pos / 32] |= val << (31 - pos % 32); return a; }
 
+static inline ip4_addr ip4_addbit(ip4_addr a, uint pos)
+{ _I(a) += 1 << (31 - pos); return a; }
+
+static inline ip6_addr ip6_addbit(ip6_addr a, uint pos)
+{
+  u32 orig = a.addr[pos / 32];
+  if (((a.addr[pos / 32] += 1 << (31 - pos % 32)) < orig) && pos >= 32)
+    return ip6_addbit(a, pos - pos%32 - 1);
+  else
+    return a;
+}
 
 static inline ip4_addr ip4_opposite_m1(ip4_addr a)
 { return _MI4(_I(a) ^ 1); }
