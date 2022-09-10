@@ -179,7 +179,11 @@ ev_send(event_list *l, event *e)
     bug("Queuing an already queued event to another queue is not supported.");
 
   event *next = atomic_load_explicit(&l->receiver, memory_order_acquire);
-  do atomic_store_explicit(&e->next, next, memory_order_relaxed);
+  event *nullevent = NULL;
+  do if (atomic_compare_exchange_strong_explicit(&e->next, &nullevent, next, memory_order_acq_rel, memory_order_acquire))
+    nullevent = next;
+  else
+    return;
   while (!atomic_compare_exchange_strong_explicit(
 	&l->receiver, &next, e,
 	memory_order_acq_rel, memory_order_acquire));
