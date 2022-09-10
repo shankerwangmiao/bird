@@ -3094,8 +3094,11 @@ done:;
     ev_send_loop(tab->loop, tab->rt_event);
 
 
-  if (EMPTY_LIST(tab->exporter.pending) && tm_active(tab->export_timer))
+  if (EMPTY_LIST(tab->exporter.pending))
+  {
     tm_stop(tab->export_timer);
+    ev_postpone(tab->export_event);
+  }
 }
 
 static void
