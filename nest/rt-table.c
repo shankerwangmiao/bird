@@ -94,6 +94,7 @@
 #include "nest/route.h"
 #include "nest/protocol.h"
 #include "nest/iface.h"
+#include "nest/mpls.h"
 #include "lib/resource.h"
 #include "lib/event.h"
 #include "lib/timer.h"
@@ -1544,9 +1545,10 @@ rte_update_unlock(void)
 void
 rte_update2(struct channel *c, const net_addr *n, rte *new, struct rte_src *src)
 {
-  // struct proto *p = c->proto;
+  struct proto *p = c->proto;
   struct proto_stats *stats = &c->stats;
   const struct filter *filter = c->in_filter;
+  struct mpls_fec *fec = NULL;
   net *nn;
 
   ASSERT(c->channel_state == CS_UP);
@@ -1595,6 +1597,10 @@ rte_update2(struct channel *c, const net_addr *n, rte *new, struct rte_src *src)
 	    new->flags |= REF_FILTERED;
 	  }
 	}
+
+      if (p->mpls_map)
+	mpls_handle_rte(p->mpls_map, n, new, rte_update_pool, &fec);
+
       if (!rta_is_cached(new->attrs)) /* Need to copy attributes */
 	new->attrs = rta_lookup(new->attrs);
       new->flags |= REF_COW;
@@ -1618,6 +1624,9 @@ rte_update2(struct channel *c, const net_addr *n, rte *new, struct rte_src *src)
  recalc:
   /* And recalculate the best route */
   rte_recalculate(c, nn, new, src);
+
+  if (p->mpls_map)
+    mpls_handle_rte_cleanup(p->mpls_map, &fec);
 
   rte_update_unlock();
   return;
