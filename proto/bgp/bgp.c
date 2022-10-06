@@ -956,7 +956,7 @@ bgp_refresh_begin(struct bgp_channel *c)
   { log(L_WARN "%s: BEGIN-OF-RR received before END-OF-RIB, ignoring", p->p.name); return; }
 
   if (c->load_state == BFS_REFRESHING)
-    channel_refresh_end(&c->c);
+    rt_refresh_end(&c->c.in_req);
 
   c->load_state = BFS_REFRESHING;
   rt_refresh_begin(&c->c.in_req);
