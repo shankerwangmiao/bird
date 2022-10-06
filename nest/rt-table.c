@@ -2068,13 +2068,17 @@ rt_table_export_uncork(void *_hook)
   if (loop != &main_birdloop)
     birdloop_enter(loop);
 
+  log(L_INFO "XX rt_table_export_uncork: %p", hook->h.n.next);
   u8 state;
   switch (state = atomic_load_explicit(&hook->h.export_state, memory_order_relaxed))
   {
     case TES_HUNGRY:
       RT_LOCKED(RT_PUB(SKIP_BACK(struct rtable_private, exporter, hook->table)), tab)
-	rt_table_export_start_feed(tab, hook);
-      break;
+	if ((state = atomic_load_explicit(&hook->h.export_state, memory_order_relaxed)) == TES_HUNGRY)
+	  rt_table_export_start_feed(tab, hook);
+      if (state != TES_STOP)
+	break;
+      /* fall through */
     case TES_STOP:
       rt_stop_export_common(&hook->h);
       break;
@@ -2181,18 +2185,18 @@ rt_alloc_export(struct rt_exporter *re, uint size)
   hook->pool = p;
   hook->table = re;
 
+  hook->n = (node) {};
+  add_tail(&re->hooks, &hook->n);
+
   return hook;
 }
 
 void
-rt_init_export(struct rt_exporter *re, struct rt_export_hook *hook)
+rt_init_export(struct rt_exporter *re UNUSED, struct rt_export_hook *hook)
 {
   hook->event.data = hook;
 
   bmap_init(&hook->seq_map, hook->pool, 1024);
-
-  hook->n = (node) {};
-  add_tail(&re->hooks, &hook->n);
 
   /* Regular export */
   rt_set_export_state(hook, TES_FEEDING);
@@ -2208,6 +2212,7 @@ rt_table_export_stop_locked(struct rt_export_hook *hh)
   switch (atomic_load_explicit(&hh->export_state, memory_order_relaxed))
   {
     case TES_HUNGRY:
+      rt_trace(tab, D_EVENTS, "Stopping export hook %s must wait for uncorking; %p", hook->h.req->name, hook->h.n.next);
       return 0;
     case TES_FEEDING:
       switch (hh->req->addr_mode)
@@ -2228,6 +2233,8 @@ rt_table_export_stop_locked(struct rt_export_hook *hh)
       }
 
   }
+
+  rt_trace(tab, D_EVENTS, "Stopping export hook %s right now", hook->h.req->name);
   return 1;
 }
 
@@ -2259,6 +2266,7 @@ rt_stop_export(struct rt_export_request *req, void (*stopped)(struct rt_export_r
   /* Set the stopped callback */
   hook->stopped = stopped;
 
+  log(L_INFO "XX rt_stop_export: %p", req->hook->n.next);
   /* Run the stop code */
   if (hook->table->class->stop)
     hook->table->class->stop(hook);
