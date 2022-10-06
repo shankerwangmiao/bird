@@ -4009,7 +4009,7 @@ rt_check_cork_low(struct rtable_private *tab)
   if (!tab->cork_active)
     return;
 
-  if (!tab->exporter.first || (tab->exporter.first->seq + tab->cork_threshold.low > tab->exporter.next_seq))
+  if (tab->deleted || !tab->exporter.first || (tab->exporter.first->seq + tab->cork_threshold.low > tab->exporter.next_seq))
   {
     tab->cork_active = 0;
     rt_cork_release();
@@ -4021,7 +4021,7 @@ rt_check_cork_low(struct rtable_private *tab)
 static void
 rt_check_cork_high(struct rtable_private *tab)
 {
-  if (!tab->cork_active && tab->exporter.first && (tab->exporter.first->seq + tab->cork_threshold.high <= tab->exporter.next_seq))
+  if (!tab->deleted && !tab->cork_active && tab->exporter.first && (tab->exporter.first->seq + tab->cork_threshold.high <= tab->exporter.next_seq))
   {
     tab->cork_active = 1;
     rt_cork_acquire();
@@ -4119,6 +4119,7 @@ rt_commit(struct config *new, struct config *old)
 	      ev_postpone(&tab->hostcache->update);
 	  }
 
+	  rt_check_cork_low(tab);
 	  rt_unlock_table(tab);
 
 	  RT_UNLOCK(tab);
