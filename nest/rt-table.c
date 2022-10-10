@@ -2068,7 +2068,6 @@ rt_table_export_uncork(void *_hook)
   if (loop != &main_birdloop)
     birdloop_enter(loop);
 
-  log(L_INFO "XX rt_table_export_uncork: %p", hook->h.n.next);
   u8 state;
   switch (state = atomic_load_explicit(&hook->h.export_state, memory_order_relaxed))
   {
@@ -2266,7 +2265,6 @@ rt_stop_export(struct rt_export_request *req, void (*stopped)(struct rt_export_r
   /* Set the stopped callback */
   hook->stopped = stopped;
 
-  log(L_INFO "XX rt_stop_export: %p", req->hook->n.next);
   /* Run the stop code */
   if (hook->table->class->stop)
     hook->table->class->stop(hook);
