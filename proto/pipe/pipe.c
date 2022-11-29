@@ -92,7 +92,7 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, net *n, rte *new, rte *o
     }
 
   src_ch->table->pipe_busy = 1;
-  rte_update2(dst, n->n.addr, e, src);
+  rte_update2(dst, n->n.addr, e, old ? old->src : new->src);
   src_ch->table->pipe_busy = 0;
 }
 
@@ -155,7 +155,8 @@ pipe_configure_channels(struct pipe_proto *p, struct pipe_config *cf)
     .table = cc->table,
     .out_filter = cc->out_filter,
     .in_limit = cc->in_limit,
-    .ra_mode = RA_ANY,
+    .ra_mode = cf->merge_limit ? RA_MERGED : RA_ANY,
+    .merge_limit = cf->merge_limit,
     .debug = cc->debug,
     .rpki_reload = cc->rpki_reload,
   };
@@ -166,7 +167,8 @@ pipe_configure_channels(struct pipe_proto *p, struct pipe_config *cf)
     .table = cf->peer,
     .out_filter = cc->in_filter,
     .in_limit = cc->out_limit,
-    .ra_mode = RA_ANY,
+    .ra_mode = cf->merge_limit ? RA_MERGED : RA_ANY,
+    .merge_limit = cf->merge_limit,
     .debug = cc->debug,
     .rpki_reload = cc->rpki_reload,
   };

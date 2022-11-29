@@ -12,6 +12,7 @@
 struct pipe_config {
   struct proto_config c;
   struct rtable_config *peer;		/* Table we're connected to */
+  u8 merge_limit;
 };
 
 struct pipe_proto {
