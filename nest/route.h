@@ -284,6 +284,7 @@ static inline int rte_is_filtered(rte *r) { return !!(r->flags & REF_FILTERED); 
 #define RA_ACCEPTED	2		/* Announcement of first accepted route */
 #define RA_ANY		3		/* Announcement of any route change */
 #define RA_MERGED	4		/* Announcement of optimal route merged with next ones */
+#define RA_AGGREGATED 5     /* Announcement of merged routes */
 
 /* Return value of preexport() callback */
 #define RIC_ACCEPT	1		/* Accepted by protocol */

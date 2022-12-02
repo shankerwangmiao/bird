@@ -155,8 +155,8 @@ pipe_configure_channels(struct pipe_proto *p, struct pipe_config *cf)
     .table = cc->table,
     .out_filter = cc->out_filter,
     .in_limit = cc->in_limit,
-    .ra_mode = cf->merge_limit ? RA_MERGED : RA_ANY,
-    .merge_limit = cf->merge_limit,
+    .ra_mode = cf->merge_limit_export ? RA_MERGED : RA_ANY,
+    .merge_limit = cf->merge_limit_export,
     .debug = cc->debug,
     .rpki_reload = cc->rpki_reload,
   };
@@ -167,8 +167,8 @@ pipe_configure_channels(struct pipe_proto *p, struct pipe_config *cf)
     .table = cf->peer,
     .out_filter = cc->in_filter,
     .in_limit = cc->out_limit,
-    .ra_mode = cf->merge_limit ? RA_MERGED : RA_ANY,
-    .merge_limit = cf->merge_limit,
+    .ra_mode = cf->merge_limit_import ? RA_MERGED : RA_ANY,
+    .merge_limit = cf->merge_limit_import,
     .debug = cc->debug,
     .rpki_reload = cc->rpki_reload,
   };
