@@ -835,7 +835,7 @@ sym_args:
  | sym_args FILTER { $$ = $1; $$->type = SYM_FILTER; }
  | sym_args PROTOCOL { $$ = $1; $$->type = SYM_PROTO; }
  | sym_args TEMPLATE { $$ = $1; $$->type = SYM_TEMPLATE; }
- | sym_args symbol { $$ = $1; $$->sym = $2; }
+ | sym_args CF_SYM_KNOWN { $$ = $1; $$->sym = $2; }
  ;
 
 

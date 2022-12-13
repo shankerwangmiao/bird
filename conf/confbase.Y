@@ -172,7 +172,7 @@ expr_us:
  | expr US { $$ = $1 US_; }
  ;
 
-symbol: CF_SYM_UNDEFINED | CF_SYM_KNOWN ;
+symbol: CF_SYM_UNDEFINED | CF_SYM_KNOWN | KEYWORD;
 
 /* Switches */
 
