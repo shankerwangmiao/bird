@@ -16,7 +16,7 @@ CF_DEFINES
 
 CF_DECLS
 
-CF_KEYWORDS(PIPE, PEER, TABLE)
+CF_KEYWORDS(PIPE, PEER, TABLE, AGGREGATED, IMPORT, EXPORT)
 
 CF_GRAMMAR
 
@@ -36,13 +36,18 @@ proto_name
   }
 };
 
+/* | pipe_proto MERGE PATHS IMPORT bool kern_mp_limit { PIPE_CFG->merge_limit_import = $5 ? $6 : 0; } */
+/* | pipe_proto MERGE PATHS EXPORT bool kern_mp_limit { PIPE_CFG->merge_limit_export = $5 ? $6 : 0; } */
+
 pipe_proto:
    pipe_proto_start '{'
  | pipe_proto proto_item ';'
  | pipe_proto channel_item_ ';'
  | pipe_proto PEER TABLE rtable ';' { PIPE_CFG->peer = $4; }
- | pipe_proto MERGE PATHS IMPORT bool kern_mp_limit { PIPE_CFG->merge_limit_import = $5 ? $6 : 0; }
- | pipe_proto MERGE PATHS EXPORT bool kern_mp_limit { PIPE_CFG->merge_limit_export = $5 ? $6 : 0; }
+ | pipe_proto MERGE PATHS IMPORT bool kern_mp_limit { PIPE_CFG->config_import.limit = $5 ? $6 : 0; PIPE_CFG->config_import.use_aggregator = 0; }
+ | pipe_proto MERGE PATHS EXPORT bool kern_mp_limit { PIPE_CFG->config_export.limit = $5 ? $6 : 0; PIPE_CFG->config_export.use_aggregator = 0; }
+ | pipe_proto IMPORT AGGREGATED bool kern_mp_limit  { PIPE_CFG->config_import.limit = $4 ? $5 : 0; PIPE_CFG->config_import.use_aggregator = 1; }
+ | pipe_proto EXPORT AGGREGATED bool kern_mp_limit  { PIPE_CFG->config_export.limit = $4 ? $5 : 0; PIPE_CFG->config_export.use_aggregator = 1; }
  ;
 
 CF_CODE

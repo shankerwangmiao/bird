@@ -323,6 +323,7 @@ void rte_update2(struct channel *c, const net_addr *n, rte *new, struct rte_src 
 /* rte_update() moved to protocol.h to avoid dependency conflicts */
 int rt_examine(rtable *t, net_addr *a, struct channel *c, const struct filter *filter);
 rte *rt_export_merged(struct channel *c, net *net, rte **rt_free, linpool *pool, int silent);
+rte *rt_export_aggregated(struct channel *c, net *net, rte **rt_free, linpool *pool, int silent);
 void rt_refresh_begin(rtable *t, struct channel *c);
 void rt_refresh_end(rtable *t, struct channel *c);
 void rt_modify_stale(rtable *t, struct channel *c);

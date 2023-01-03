@@ -971,6 +971,57 @@ rt_export_merged(struct channel *c, net *net, rte **rt_free, linpool *pool, int 
   return best;
 }
 
+rte *
+rt_export_aggregated(struct channel *c, net *net, rte **rt_free, linpool *pool, int silent)
+{
+  // struct proto *p = c->proto;
+  struct nexthop *nhs = NULL;
+  rte *best0, *best, *rt0, *rt, *tmp;
+
+  best0 = net->routes;
+  *rt_free = NULL;
+
+  if (!rte_is_valid(best0))
+    return NULL;
+
+  best = export_filter_(c, best0, rt_free, pool, silent);
+
+  if (!best || !rte_is_reachable(best))
+    return best;
+
+  for (rt0 = best0->next; rt0; rt0 = rt0->next)
+  {
+    if (!rte_mergable(best0, rt0))
+      continue;
+
+    rt = export_filter_(c, rt0, &tmp, pool, 1);
+
+    if (!rt)
+      continue;
+
+    if (rte_is_reachable(rt))
+      nhs = nexthop_merge_rta(nhs, rt->attrs, pool, c->merge_limit);
+
+    if (tmp)
+      rte_free(tmp);
+  }
+
+  if (nhs)
+  {
+    nhs = nexthop_merge_rta(nhs, best->attrs, pool, c->merge_limit);
+
+    if (nhs->next)
+    {
+      best = rte_cow_rta(best, pool);
+      nexthop_link(best->attrs, nhs);
+    }
+  }
+
+  if (best != best0)
+    *rt_free = best;
+
+  return best;
+}
 
 static void
 rt_notify_merged(struct channel *c, net *net, rte *new_changed, rte *old_changed,
@@ -1015,6 +1066,48 @@ rt_notify_merged(struct channel *c, net *net, rte *new_changed, rte *old_changed
     rte_free(new_free);
 }
 
+static void
+rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_changed,
+		 rte *new_best, rte *old_best, int refeed)
+{
+  // struct proto *p = c->proto;
+  rte *new_free = NULL;
+
+  /* We assume that all rte arguments are either NULL or rte_is_valid() */
+
+  /* This check should be done by the caller */
+  if (!new_best && !old_best)
+    return;
+
+  /* Check whether the change is relevant to the merged route */
+  if ((new_best == old_best) &&
+      (new_changed != old_changed) &&
+      !rte_mergable(new_best, new_changed) &&
+      !rte_mergable(old_best, old_changed))
+    return;
+
+  if (new_best)
+    c->stats.exp_updates_received++;
+  else
+    c->stats.exp_withdraws_received++;
+
+  /* Prepare new merged route */
+  if (new_best)
+    new_best = rt_export_merged(c, net, &new_free, rte_update_pool, 0);
+
+  /* Check old merged route */
+  if (old_best && !bmap_test(&c->export_map, old_best->id))
+    old_best = NULL;
+
+  if (!new_best && !old_best)
+    return;
+
+  do_rt_notify(c, net, new_best, old_best, refeed);
+
+  /* Discard temporary rte */
+  if (new_free)
+    rte_free(new_free);
+}
 
 /**
  * rte_announce - announce a routing table change
@@ -1117,6 +1210,10 @@ rte_announce(rtable *tab, uint type, net *net, rte *new, rte *old,
 
     case RA_MERGED:
       rt_notify_merged(c, net, new, old, new_best, old_best, 0);
+      break;
+
+    case RA_AGGREGATED:
+      rt_notify_aggregated(c, net, new, old, new_best, old_best, 0);
       break;
     }
   }
@@ -2953,6 +3050,8 @@ do_feed_channel(struct channel *c, net *n, rte *e)
     rt_notify_accepted(c, n, NULL, NULL, c->refeeding);
   else if (c->ra_mode == RA_MERGED)
     rt_notify_merged(c, n, NULL, NULL, e, e, c->refeeding);
+  else if (c->ra_mode == RA_AGGREGATED)
+    rt_notify_aggregated(c, n, NULL, NULL, e, e, c->refeeding);
   else /* RA_BASIC */
     rt_notify_basic(c, n, e, e, c->refeeding);
   rte_update_unlock();
@@ -2992,7 +3091,8 @@ rt_feed_channel(struct channel *c)
 
       if ((c->ra_mode == RA_OPTIMAL) ||
 	  (c->ra_mode == RA_ACCEPTED) ||
-	  (c->ra_mode == RA_MERGED))
+	  (c->ra_mode == RA_MERGED)   ||
+      (c->ra_mode == RA_AGGREGATED))
 	if (rte_is_valid(e))
 	  {
 	    /* In the meantime, the protocol may fell down */
