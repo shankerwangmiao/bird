@@ -14,6 +14,8 @@
 #include "lib/resource.h"
 #include "lib/net.h"
 
+#include "filter/data.h"
+
 struct ea_list;
 struct protocol;
 struct proto;
@@ -548,13 +550,6 @@ const char *ea_custom_name(uint ea);
 #define EAF_EMBEDDED 0x01		/* Data stored in eattr.u.data (part of type spec) */
 #define EAF_VAR_LENGTH 0x02		/* Attribute length is variable (part of type spec) */
 
-typedef struct adata {
-  uint length;				/* Length of data */
-  byte data[0];
-} adata;
-
-extern const adata null_adata;		/* adata of length 0 */
-
 static inline struct adata *
 lp_alloc_adata(struct linpool *pool, uint len)
 {
@@ -763,5 +758,32 @@ int rt_flowspec_check(rtable *tab_ip, rtable *tab_flow, const net_addr *n, rta *
 #define ROA_UNKNOWN	0
 #define ROA_VALID	1
 #define ROA_INVALID	2
+
+/* Aggregating routes */
+
+enum aggr_item_type {
+  AGGR_ITEM_TERM,
+  AGGR_ITEM_STATIC_ATTR,
+  AGGR_ITEM_DYNAMIC_ATTR
+};
+
+struct aggr_item_internal {
+  enum aggr_item_type type;
+  union {
+    struct f_static_attr sa;
+    struct f_dynamic_attr da;
+    const struct f_line *line;
+  };
+};
+
+struct aggr_item {
+  struct aggr_item *next;
+  struct aggr_item_internal intern;
+};
+
+struct aggr_item_linearized {
+  int count;
+  struct aggr_item_internal items[];
+};
 
 #endif

@@ -63,6 +63,38 @@ enum f_type {
   T_PREFIX_SET = 0x81,
 } PACKED;
 
+typedef struct adata {
+  uint length;				/* Length of data */
+  byte data[0];
+} adata;
+
+extern const adata null_adata;		/* adata of length 0 */
+
+/* Large community value */
+typedef struct lcomm {
+  u32 asn;
+  u32 ldp1;
+  u32 ldp2;
+} lcomm;
+
+struct f_path_mask_item {
+  union {
+    u32 asn; /* PM_ASN */
+    const struct f_line *expr; /* PM_ASN_EXPR */
+    const struct f_tree *set; /* PM_ASN_SET */
+    struct { /* PM_ASN_RANGE */
+      u32 from;
+      u32 to;
+    };
+  };
+  int kind;
+};
+
+struct f_path_mask {
+  uint len;
+  struct f_path_mask_item item[0];
+};
+
 /* Filter value; size of this affects filter memory consumption */
 struct f_val {
   enum f_type type;	/* T_*  */

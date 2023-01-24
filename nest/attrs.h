@@ -65,24 +65,6 @@ static inline struct adata *as_path_prepend(struct linpool *pool, const struct a
 #define PM_ASN_SET	5
 #define PM_LOOP		6
 
-struct f_path_mask_item {
-  union {
-    u32 asn; /* PM_ASN */
-    const struct f_line *expr; /* PM_ASN_EXPR */
-    const struct f_tree *set; /* PM_ASN_SET */
-    struct { /* PM_ASN_RANGE */
-      u32 from;
-      u32 to;
-    };
-  };
-  int kind;
-};
-
-struct f_path_mask {
-  uint len;
-  struct f_path_mask_item item[0];
-};
-
 int as_path_match(const struct adata *path, const struct f_path_mask *mask);
 
 
@@ -183,13 +165,6 @@ static inline u64 ec_ip4(enum ec_subtype kind, u64 key, u64 val)
 
 static inline u64 ec_generic(u64 key, u64 val)
 { return (key << 32) | val; }
-
-/* Large community value */
-typedef struct lcomm {
-  u32 asn;
-  u32 ldp1;
-  u32 ldp2;
-} lcomm;
 
 #define LCOMM_LENGTH 12
 
