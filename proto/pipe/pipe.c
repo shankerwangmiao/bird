@@ -204,25 +204,27 @@ pipe_configure_channels(struct pipe_proto *p, struct pipe_config *cf)
   };
 
   log("aggregate on %s", cf->ai_import ? "import" : "export");
-  struct aggr_item_linearized *ail = cf->ai_import ? cf->ai_import : cf->ai_export;
+  const struct aggr_item_linearized *ail = cf->ai_import ? cf->ai_import : cf->ai_export;
   int node = 1;
 
-  for (int i = 0; i < ail->count; i++) {
-    switch (ail->items[i].type) {
-      case AGGR_ITEM_TERM:
-        log("node %d, type: term", node);
-        break;
-      case AGGR_ITEM_STATIC_ATTR:
-        log("node %d, type: static", node);
-        break;
-      case AGGR_ITEM_DYNAMIC_ATTR:
-        log("node %d, type: dynamic", node);
-        break;
-      default:
-        log("node %d, type: other", node);
-        break;
+  if (ail != NULL) {
+    for (int i = 0; i < ail->count; i++) {
+      switch (ail->items[i].type) {
+        case AGGR_ITEM_TERM:
+          log("node %d, type: term", node);
+          break;
+        case AGGR_ITEM_STATIC_ATTR:
+          log("node %d, type: static", node);
+          break;
+        case AGGR_ITEM_DYNAMIC_ATTR:
+          log("node %d, type: dynamic", node);
+          break;
+        default:
+          log("node %d, type: other", node);
+          break;
+      }
+      node++;
     }
-    node++;
   }
 
   return

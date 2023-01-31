@@ -777,7 +777,7 @@ struct aggr_item_internal {
 };
 
 struct aggr_item {
-  struct aggr_item *next;
+  const struct aggr_item *next;
   struct aggr_item_internal intern;
 };
 

@@ -87,7 +87,7 @@ aggr_definition:
       _Bool net_present = 0;
       int count = 0;
 
-      for (struct aggr_item *ai = $3; ai; ai = ai->next) {
+      for (const struct aggr_item *ai = $3; ai; ai = ai->next) {
         if (ai->intern.type == AGGR_ITEM_STATIC_ATTR && ai->intern.sa.sa_code == SA_NET) {
           net_present = 1;
         }
@@ -102,7 +102,7 @@ aggr_definition:
      struct aggr_item_linearized *linear = cfg_allocz(allocated);
      linear->count = count;
 
-     struct aggr_item *ai = $3;
+     const struct aggr_item *ai = $3;
 
      for (int i = 0; i < count; i++) {
        linear->items[i] = ai->intern;
