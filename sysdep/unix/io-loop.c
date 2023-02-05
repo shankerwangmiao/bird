@@ -330,6 +330,7 @@ sockets_prepare(struct birdloop *loop, struct pollfd *pfd, struct pollfd *end)
 
 int sk_read(sock *s, int revents);
 int sk_write(sock *s);
+void sk_err(sock *s, int revents);
 
 static void
 sockets_fire(struct birdloop *loop)
@@ -354,16 +355,22 @@ sockets_fire(struct birdloop *loop)
 
     int e = 1;
 
-    if (rev & POLLIN)
-      while (e && s->rx_hook)
-	e = sk_read(s, rev);
-
     if (rev & POLLOUT)
     {
       atomic_store_explicit(&loop->thread->poll_changed, 1, memory_order_release);
       while (e = sk_write(s))
 	;
     }
+
+    if (rev & POLLIN)
+      while (e && s->rx_hook)
+	e = sk_read(s, rev);
+
+    if (rev & (POLLOUT | POLLIN))
+      continue;
+
+    if (rev & POLLERR)
+      sk_err(s, rev);
   }
 }
 

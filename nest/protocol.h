@@ -232,6 +232,15 @@ void channel_graceful_restart_unlock(struct channel *c);
 
 #define DEFAULT_GR_WAIT	240
 
+static inline event_list *proto_event_list(struct proto *p)
+{ return p->loop == &main_birdloop ? &global_event_list : birdloop_event_list(p->loop); }
+
+static inline event_list *proto_work_list(struct proto *p)
+{ return p->loop == &main_birdloop ? &global_work_list : birdloop_event_list(p->loop); }
+
+static inline void proto_send_event(struct proto *p, event *e)
+{ ev_send(proto_event_list(p), e); }
+
 void channel_show_limit(struct limit *l, const char *dsc, int active, int action);
 void channel_show_info(struct channel *c);
 void channel_cmd_debug(struct channel *c, uint mask);
