@@ -788,6 +788,24 @@ sk_ssh_free(sock *s)
 }
 #endif
 
+void
+sk_unmain(sock *s)
+{
+  ASSERT_DIE(birdloop_inside(&main_birdloop));
+  ASSERT_DIE(!(s->flags & SKF_THREAD));
+
+  if (s == current_sock)
+    current_sock = sk_next(s);
+  if (s == stored_sock)
+    stored_sock = sk_next(s);
+
+  if (enlisted(&s->n))
+    rem_node(&s->n);
+  
+  s->flags |= SKF_THREAD;
+}
+
+
 static void
 sk_free(resource *r)
 {
@@ -803,13 +821,7 @@ sk_free(resource *r)
   if ((s->fd < 0) || (s->flags & SKF_THREAD))
     return;
 
-  if (s == current_sock)
-    current_sock = sk_next(s);
-  if (s == stored_sock)
-    stored_sock = sk_next(s);
-
-  if (enlisted(&s->n))
-    rem_node(&s->n);
+  sk_unmain(s);
 
   if (s->type != SK_SSH && s->type != SK_SSH_ACTIVE)
     close(s->fd);

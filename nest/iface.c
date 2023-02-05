@@ -270,7 +270,7 @@ if_enqueue_notify_to(struct iface_notification x, struct iface_subscription *s)
   debug("Enqueue notify %d/%p (%p) to %p\n", x.type, x.a, in, s);
 
   ifnot_add_tail(&s->queue, in);
-  ev_schedule(&s->event);
+  ev_send(s->target, &s->event);
 }
 
 void

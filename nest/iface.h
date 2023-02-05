@@ -212,6 +212,7 @@ struct iface_subscription {
   TLIST_DEFAULT_NODE;
 
   event event;
+  event_list *target;
   TLIST_LIST(ifnot) queue;
 
   void (*if_notify)(struct proto *, unsigned flags, struct iface *i);
