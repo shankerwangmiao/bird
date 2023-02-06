@@ -1163,7 +1163,6 @@ proto_event(void *ptr)
   if (p->do_stop)
   {
     iface_unsubscribe(&p->iface_sub);
-    neigh_prune(p);
 
     p->do_stop = 0;
   }
