@@ -1283,8 +1283,7 @@ kif_do_scan(struct kif_proto *p UNUSED)
       log(L_DEBUG "nl_scan_ifaces: Unknown packet received (type=%d)", h->nlmsg_type);
 
   /* Re-resolve master interface for slaves */
-  struct iface *i;
-  WALK_LIST(i, iface_list)
+  IFACE_WALK(i)
     if (i->master_index)
     {
       struct iface f = {
@@ -1298,7 +1297,7 @@ kif_do_scan(struct kif_proto *p UNUSED)
       if (f.master != i->master)
       {
 	memcpy(f.name, i->name, sizeof(f.name));
-	if_update(&f);
+	if_update_locked(&f);
       }
     }
 
