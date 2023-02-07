@@ -589,24 +589,6 @@ neigh_ifa_down(struct ifa *a)
 }
 
 /**
- * neigh_prune - prune neighbor cache
- *
- * neigh_prune() examines all neighbor entries cached and removes those
- * corresponding to inactive protocols. It's called whenever a protocol
- * is shut down to get rid of all its heritage.
- */
-void
-neigh_prune(struct proto *p)
-{
-  IFACE_LOCK;
-  WALK_TLIST_DELSAFE(proto_neigh, n, &p->neighbors)
-    neigh_unlink(n);
-
-  ASSERT_DIE(EMPTY_TLIST(proto_neigh, &p->neighbors));
-  IFACE_UNLOCK;
-}
-
-/**
  * neigh_init - initialize the neighbor cache.
  * @if_pool: resource pool to be used for neighbor entries.
  *

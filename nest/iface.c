@@ -654,6 +654,10 @@ iface_unsubscribe(struct iface_subscription *s)
 {
   IFACE_LOCK;
 
+  struct proto *p = SKIP_BACK(struct proto, iface_sub, s);
+  WALK_TLIST_DELSAFE(proto_neigh, n, &p->neighbors)
+    neigh_unlink(n);
+
   ifsub_rem_node(&iface_sub_list, s);
   ev_postpone(&s->event);
 
@@ -678,6 +682,8 @@ iface_unsubscribe(struct iface_subscription *s)
     ifnot_rem_node(&s->queue, n);
     sl_free(n);
   }
+
+  ASSERT_DIE(EMPTY_TLIST(proto_neigh, &p->neighbors));
 
   IFACE_UNLOCK;
 }
