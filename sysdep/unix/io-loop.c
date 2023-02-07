@@ -299,6 +299,32 @@ sk_stop(sock *s)
   sockets_remove(birdloop_current, s);
 }
 
+void
+sk_pause_rx(struct birdloop *loop, sock *s)
+{
+  ASSERT_DIE(birdloop_inside(loop));
+  s->rx_hook = NULL;
+  if (loop->thread)
+  {
+    atomic_store_explicit(&loop->thread->poll_changed, 1, memory_order_release);
+    birdloop_ping(loop);
+  }
+}
+
+void
+sk_resume_rx(struct birdloop *loop, sock *s, int (*hook)(sock *, uint))
+{
+  ASSERT_DIE(birdloop_inside(loop));
+  ASSERT_DIE(hook);
+  s->rx_hook = hook;
+  if (loop->thread)
+  {
+    atomic_store_explicit(&loop->thread->poll_changed, 1, memory_order_release);
+    birdloop_ping(loop);
+  }
+}
+
+
 static inline uint sk_want_events(sock *s)
 { return (s->rx_hook ? POLLIN : 0) | ((s->ttx != s->tpos) ? POLLOUT : 0); }
 
