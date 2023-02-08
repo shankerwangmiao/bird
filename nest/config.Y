@@ -16,6 +16,7 @@ CF_HDR
 #include "lib/mac.h"
 
 CF_DEFINES
+#define AGGR_ITEM_ALLOC cfg_allocz(sizeof(struct aggr_item))
 
 static struct rtable_config *this_table;
 static struct proto_config *this_proto;
@@ -126,6 +127,7 @@ CF_KEYWORDS(GRACEFUL, RESTART, WAIT, MAX, FLUSH, AS)
 CF_KEYWORDS(MIN, IDLE, RX, TX, INTERVAL, MULTIPLIER, PASSIVE)
 CF_KEYWORDS(CHECK, LINK)
 CF_KEYWORDS(SORTED, TRIE, MIN, MAX, SETTLE, TIME, GC, THRESHOLD, PERIOD)
+CF_KEYWORDS(AGGREGATE)
 
 /* For r_args_channel */
 CF_KEYWORDS(IPV4, IPV4_MC, IPV4_MPLS, IPV6, IPV6_MC, IPV6_MPLS, IPV6_SADR, VPN4, VPN4_MC, VPN4_MPLS, VPN6, VPN6_MC, VPN6_MPLS, ROA4, ROA6, FLOW4, FLOW6, MPLS, PRI, SEC)
@@ -151,6 +153,8 @@ CF_ENUM_PX(T_ENUM_AF, AF_, AFI_, IPV4, IPV6)
 %type <net_ptr> r_args_for
 %type <t> channel_sym
 %type <c> channel_arg
+%type <ai> aggr_item aggr_list
+%type <ail> aggr_definition
 
 CF_GRAMMAR
 
@@ -296,6 +300,76 @@ proto_item:
  ;
 
 
+aggr_list:
+   aggr_item
+ | aggr_list ',' aggr_item {
+       $$ = $3;
+       $$->next = $1;
+   }
+ ;
+
+aggr_item:
+   '(' term ')' {
+       $$ = AGGR_ITEM_ALLOC;
+       $$->intern.type = AGGR_ITEM_TERM;
+       $$->intern.line = f_linearize($2, 1);
+    }
+  | CF_SYM_KNOWN {
+      switch ($1->class) {
+        case SYM_ATTRIBUTE:
+          $$ = AGGR_ITEM_ALLOC;
+          $$->intern.type = AGGR_ITEM_DYNAMIC_ATTR;
+          $$->intern.da = *$1->attribute;
+          break;
+        case SYM_CONSTANT_RANGE:
+          break;
+        default:
+          cf_error("Can't aggregate on symbol type %s.", cf_symbol_class_name($1));
+      }
+    }
+  | dynamic_attr {
+      $$ = AGGR_ITEM_ALLOC;
+      $$->intern.type = AGGR_ITEM_DYNAMIC_ATTR;
+      $$->intern.da = $1;
+    }
+  | static_attr {
+      $$ = AGGR_ITEM_ALLOC;
+      $$->intern.type = AGGR_ITEM_STATIC_ATTR;
+      $$->intern.sa = $1;
+    }
+  ;
+
+aggr_definition:
+    AGGREGATE ON aggr_list {
+      _Bool net_present = 0;
+      int count = 0;
+
+      for (const struct aggr_item *ai = $3; ai; ai = ai->next) {
+        if (ai->intern.type == AGGR_ITEM_STATIC_ATTR && ai->intern.sa.sa_code == SA_NET) {
+          net_present = 1;
+        }
+        count++;
+      }
+
+     if (!net_present) {
+       cf_error("'NET' must be present");
+     }
+
+     size_t allocated = sizeof(struct aggr_item_linearized) + sizeof(struct aggr_item_internal) * count;
+     struct aggr_item_linearized *linear = cfg_allocz(allocated);
+     linear->count = count;
+
+     const struct aggr_item *ai = $3;
+
+     for (int i = 0; i < count; i++) {
+       linear->items[i] = ai->intern;
+       ai = ai->next;
+     }
+     $$ = linear;
+  }
+  ;
+
+
 channel_start: net_type
 {
   $$ = this_channel = channel_config_get(NULL, net_label[$1], $1, this_proto);
@@ -309,6 +383,7 @@ channel_item_:
    }
  | IMPORT imexport { this_channel->in_filter = $2; }
  | EXPORT imexport { this_channel->out_filter = $2; }
+ | EXPORT aggr_definition { this_channel->ai_aggr = $2; }
  | RECEIVE LIMIT limit_spec { this_channel->rx_limit = $3; }
  | IMPORT LIMIT limit_spec { this_channel->in_limit = $3; }
  | EXPORT LIMIT limit_spec { this_channel->out_limit = $3; }
