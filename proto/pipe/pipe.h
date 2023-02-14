@@ -24,8 +24,6 @@ struct pipe_config {
   struct rtable_config *peer;		    /* Table we're connected to */
   struct merging_import config_import;  /* From peer table to primary table */
   struct merging_export config_export;  /* From primary table to peer table */
-  const struct aggr_item_linearized *ai_import;
-  const struct aggr_item_linearized *ai_export;
 };
 
 struct pipe_proto {

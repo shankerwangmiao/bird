@@ -203,7 +203,7 @@ pipe_configure_channels(struct pipe_proto *p, struct pipe_config *cf)
     .rpki_reload = cc->rpki_reload,
   };
 
-  log("ai_aggr = %p, cf import = %p, cf export = %p,", cc->ai_aggr, cf->ai_import, cf->ai_export);
+  log("ai_aggr = %p", cc->ai_aggr);
   const struct aggr_item_linearized *ail = cc->ai_aggr;
   int node = 1;
 
