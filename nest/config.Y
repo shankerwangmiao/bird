@@ -311,15 +311,15 @@ aggr_list:
 aggr_item:
    '(' term ')' {
        $$ = AGGR_ITEM_ALLOC;
-       $$->intern.type = AGGR_ITEM_TERM;
-       $$->intern.line = f_linearize($2, 1);
+       $$->internal.type = AGGR_ITEM_TERM;
+       $$->internal.line = f_linearize($2, 1);
     }
   | CF_SYM_KNOWN {
       switch ($1->class) {
         case SYM_ATTRIBUTE:
           $$ = AGGR_ITEM_ALLOC;
-          $$->intern.type = AGGR_ITEM_DYNAMIC_ATTR;
-          $$->intern.da = *$1->attribute;
+          $$->internal.type = AGGR_ITEM_DYNAMIC_ATTR;
+          $$->internal.da = *$1->attribute;
           break;
         case SYM_CONSTANT_RANGE:
           break;
@@ -329,13 +329,13 @@ aggr_item:
     }
   | dynamic_attr {
       $$ = AGGR_ITEM_ALLOC;
-      $$->intern.type = AGGR_ITEM_DYNAMIC_ATTR;
-      $$->intern.da = $1;
+      $$->internal.type = AGGR_ITEM_DYNAMIC_ATTR;
+      $$->internal.da = $1;
     }
   | static_attr {
       $$ = AGGR_ITEM_ALLOC;
-      $$->intern.type = AGGR_ITEM_STATIC_ATTR;
-      $$->intern.sa = $1;
+      $$->internal.type = AGGR_ITEM_STATIC_ATTR;
+      $$->internal.sa = $1;
     }
   ;
 
@@ -345,7 +345,7 @@ aggr_definition:
       int count = 0;
 
       for (const struct aggr_item *ai = $3; ai; ai = ai->next) {
-        if (ai->intern.type == AGGR_ITEM_STATIC_ATTR && ai->intern.sa.sa_code == SA_NET) {
+        if (ai->internal.type == AGGR_ITEM_STATIC_ATTR && ai->internal.sa.sa_code == SA_NET) {
           net_present = 1;
         }
         count++;
@@ -362,7 +362,9 @@ aggr_definition:
      const struct aggr_item *ai = $3;
 
      for (int i = 0; i < count; i++) {
-       linear->items[i] = ai->intern;
+       if (ai->internal.sa.sa_code != SA_NET) {
+         linear->items[i] = ai->internal;
+       }
        ai = ai->next;
      }
      $$ = linear;
