@@ -1067,6 +1067,17 @@ rt_notify_merged(struct channel *c, net *net, rte *new_changed, rte *old_changed
 }
 
 static void
+log_attributes(const struct f_val *values, int count)
+{
+    for (int i = 0; i < count; i++) {
+      struct buffer buf;
+      LOG_BUFFER_INIT(buf);
+      val_format(&values[i], &buf);
+      log("%s", &buf.start);
+    }
+}
+
+static void
 rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_changed,
 		 rte *new_best, rte *old_best, int refeed)
 {
@@ -1107,6 +1118,150 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
   /* Discard temporary rte */
   if (new_free)
     rte_free(new_free);
+
+  const struct aggr_item_linearized * const linear = c->ai_aggr;
+  const struct aggr_item_internal * const items = linear->items;
+  const int count = linear->count;
+
+  struct rte *best0 = net->routes;
+  
+  for (rte *rt0 = best0->next; rt0; rt0 = rt0->next) {
+    struct f_val *values = alloca(sizeof(struct f_val) * count);
+
+    for (int it = 0; it < count; it++) {
+      int type = items[it].type;
+
+      switch (type) {
+        case AGGR_ITEM_TERM: {
+          const struct f_line *line = items[it].line;
+          struct rte *rt1 = rt0;
+          enum filter_return fret = f_aggr_eval_line(line, &rt1, rte_update_pool, &values[it]);
+
+          if (rt1 != rt0) {
+            rte_free(rt1);
+            log(L_WARN "rt1 != rt0");
+          }
+
+          if (fret > F_RETURN) {
+            log(L_WARN "%s.%s: Wrong number of items left on stack after evaluation of aggregation list", rt1->src->proto->name, rt1->sender);
+          }
+          break;
+        }
+        case AGGR_ITEM_STATIC_ATTR: {
+          struct f_static_attr sa = items[it].sa;
+          struct rte *rt1 = rt0;
+          struct rta *rta = rt1->attrs;
+
+#define RESULT(_type, value, result)    do {                                    \
+                                          values[it].type = _type;              \
+                                          values[it].val.value = result;        \
+                                        } while (0)
+            switch (sa.sa_code) {
+              case SA_FROM:	RESULT(sa.f_type, ip, rta->from); break;
+              case SA_GW:	RESULT(sa.f_type, ip, rta->nh.gw); break;
+              case SA_PROTO:	RESULT(sa.f_type, s, rt1->src->proto->name); break;
+              case SA_SOURCE:	RESULT(sa.f_type, i, rta->source); break;
+              case SA_SCOPE:	RESULT(sa.f_type, i, rta->scope); break;
+              case SA_DEST:	RESULT(sa.f_type, i, rta->dest); break;
+              case SA_IFNAME:	RESULT(sa.f_type, s, rta->nh.iface ? rta->nh.iface->name : ""); break;
+              case SA_IFINDEX:	RESULT(sa.f_type, i, rta->nh.iface ? rta->nh.iface->index : 0); break;
+              case SA_WEIGHT:	RESULT(sa.f_type, i, rta->nh.weight + 1); break;
+              case SA_PREF:	RESULT(sa.f_type, i, rta->pref); break;
+              case SA_GW_MPLS:	RESULT(sa.f_type, i, rta->nh.labels ? rta->nh.label[0] : MPLS_NULL); break;
+              default:
+                bug("Invalid static attribute access (%u/%u)", sa.f_type, sa.sa_code);
+            }
+#undef RESULT
+          break;
+        }
+        case AGGR_ITEM_DYNAMIC_ATTR: {
+          struct f_dynamic_attr da = items[it].da;
+          struct rte *rt1 = rt0;
+          struct rta *rta = rt1->attrs;
+
+#define RESULT(_type, value, result)    do {                                \
+                                          values[it].type = _type;          \
+                                          values[it].val.value = result;    \
+                                        } while (0)
+
+          eattr *e = ea_find(rta->eattrs, da.ea_code);
+
+          if (!e) {
+	        /* A special case: undefined as_path looks like empty as_path */
+	        if (da.type == EAF_TYPE_AS_PATH) {
+	          RESULT(T_PATH, ad, &null_adata);
+	          break;
+	        }
+
+	        /* The same special case for int_set */
+	        if (da.type == EAF_TYPE_INT_SET) {
+	          RESULT(T_CLIST, ad, &null_adata);
+	          break;
+	        }
+
+	        /* The same special case for ec_set */
+	        if (da.type == EAF_TYPE_EC_SET) {
+	          RESULT(T_ECLIST, ad, &null_adata);
+	          break;
+	        }
+
+	        /* The same special case for lc_set */
+	        if (da.type == EAF_TYPE_LC_SET) {
+	          RESULT(T_LCLIST, ad, &null_adata);
+	          break;
+	        }
+
+	        /* Undefined value */
+#define RESULT_VOID     do {                            \
+                          values[it].type = T_VOID;     \
+                        } while (0)
+	        RESULT_VOID;
+#undef RESULT_VOID
+	        break;
+          }
+
+          switch (e->type & EAF_TYPE_MASK) {
+            case EAF_TYPE_INT:
+	          RESULT(da.f_type, i, e->u.data);
+	          break;
+            case EAF_TYPE_ROUTER_ID:
+	          RESULT(T_QUAD, i, e->u.data);
+	          break;
+            case EAF_TYPE_OPAQUE:
+	          RESULT(T_ENUM_EMPTY, i, 0);
+	          break;
+            case EAF_TYPE_IP_ADDRESS:
+	          RESULT(T_IP, ip, *((ip_addr *) e->u.ptr->data));
+	          break;
+            case EAF_TYPE_AS_PATH:
+	          RESULT(T_PATH, ad, e->u.ptr);
+	          break;
+            case EAF_TYPE_BITFIELD:
+	          RESULT(T_BOOL, i, !!(e->u.data & (1u << da.bit)));
+	          break;
+            case EAF_TYPE_INT_SET:
+	          RESULT(T_CLIST, ad, e->u.ptr);
+	          break;
+            case EAF_TYPE_EC_SET:
+	          RESULT(T_ECLIST, ad, e->u.ptr);
+	          break;
+            case EAF_TYPE_LC_SET:
+	          RESULT(T_LCLIST, ad, e->u.ptr);
+	          break;
+            default:
+	          bug("Unknown dynamic attribute type");
+          }
+          break;
+#undef RESULT
+        }
+        default:
+          break;
+      }
+
+      log_attributes(values, count);
+    }
+  }
+
 }
 
 /**

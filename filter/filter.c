@@ -236,6 +236,29 @@ interpret(struct filter_state *fs, const struct f_line *line, struct f_val *val)
   return F_ERROR;
 }
 
+/**
+ * Evaluation for attributes comparison
+ */
+enum filter_return
+f_aggr_eval_line(const struct f_line *line, struct rte **rte, struct linpool *pool, struct f_val *pres)
+{
+  /* Initialize the filter state */
+  filter_state = (struct filter_state) {
+    .stack = &filter_stack,
+    .rte = rte,
+    .pool = pool,
+  };
+
+  LOG_BUFFER_INIT(filter_state.buf);
+
+  /* Run the interpreter itself */
+  enum filter_return fret = interpret(&filter_state, line, pres);
+
+  if (filter_state.old_rta) {
+    log("Warning: route changed during filter evaluation");
+  } 
+  return fret;
+}
 
 /**
  * f_run - run a filter for a route
