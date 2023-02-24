@@ -697,20 +697,24 @@ iface_unsubscribe(struct iface_subscription *s)
  * if no such structure exists.
  */
 struct iface *
-if_find_by_index(unsigned idx)
+if_find_by_index_locked(unsigned idx)
 {
   struct iface *i;
 
-  IFACE_LOCK;
   WALK_LIST(i, global_iface_list)
     if (i->index == idx && !(i->flags & IF_SHUTDOWN))
-    {
-      IFACE_UNLOCK;
       return i;
-    }
 
-  IFACE_UNLOCK;
   return NULL;
+}
+
+struct iface *
+if_find_by_index(unsigned idx)
+{
+  IFACE_LOCK;
+  struct iface *i = if_find_by_index_locked(idx);
+  IFACE_UNLOCK;
+  return i;
 }
 
 /**

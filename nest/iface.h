@@ -119,6 +119,7 @@ void if_start_update(void);
 void if_end_partial_update(struct iface *);
 void if_end_update(void);
 struct iface *if_find_by_index(unsigned);
+struct iface *if_find_by_index_locked(unsigned);
 struct iface *if_find_by_name(const char *);
 struct iface *if_get_by_name(const char *);
 void if_recalc_all_preferred_addresses(void);

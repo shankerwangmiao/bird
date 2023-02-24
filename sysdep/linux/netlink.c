@@ -1291,7 +1291,7 @@ kif_do_scan(struct kif_proto *p UNUSED)
 	.mtu = i->mtu,
 	.index = i->index,
 	.master_index = i->master_index,
-	.master = if_find_by_index(i->master_index)
+	.master = if_find_by_index_locked(i->master_index)
       };
 
       if (f.master != i->master)
