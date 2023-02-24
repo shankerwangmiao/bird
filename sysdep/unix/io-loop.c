@@ -465,7 +465,6 @@ bird_thread_main(void *arg)
 
       timer *t;
 
-      times_update();
       timers_fire(&loop->time, 0);
       int again = birdloop_process_flags(loop) + ev_run_list(&loop->event_list);
 
