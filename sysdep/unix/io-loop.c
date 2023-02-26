@@ -218,16 +218,37 @@ wakeup_do_kick(struct bird_thread *loop)
 static inline void
 birdloop_do_ping(struct birdloop *loop)
 {
+  /* Register our ping effort */
+  u32 ltt = atomic_fetch_or_explicit(&loop->thread_transition, LTT_PING, memory_order_acq_rel);
+
+  /* Somebody else is already pinging */
+  if (ltt & LTT_PING)
+    return;
+
+  /* Thread moving is an implicit ping */
+  if (ltt & LTT_MOVE)
+    goto done;
+
+  /* No more flags allowed */
+  ASSERT_DIE(!ltt);
+
+  /* No ping when not picked up */
   if (!loop->thread)
-    return;
+    goto done;
 
+  /* No ping when already pinged */
   if (atomic_fetch_add_explicit(&loop->thread->ping_sent, 1, memory_order_acq_rel))
-    return;
+    goto done;
 
+  /* No ping when masked */
   if (loop == birdloop_wakeup_masked)
     birdloop_wakeup_masked_count++;
   else
     wakeup_do_kick(loop->thread);
+
+  /* Signal that ping is done */
+done:
+  atomic_fetch_and_explicit(&loop->thread_transition, ~LTT_PING, memory_order_acq_rel);
 }
 
 void
@@ -411,6 +432,85 @@ static list bird_thread_pickup;
 
 static _Thread_local struct bird_thread *this_thread;
 
+static void
+birdloop_set_thread(struct birdloop *loop, struct bird_thread *thr)
+{
+  /* Signal our moving effort */
+  u32 ltt = atomic_fetch_or_explicit(&loop->thread_transition, LTT_MOVE, memory_order_acq_rel);
+  ASSERT_DIE((ltt & LTT_MOVE) == 0);
+
+  while (ltt & LTT_PING)
+  {
+    birdloop_yield();
+    ltt = atomic_load_explicit(&loop->thread_transition, memory_order_acquire);
+    ASSERT_DIE((ltt & LTT_MOVE) == 0);
+  }
+  /* Now we are free of running pings */
+
+  if (loop->thread = thr)
+    add_tail(&thr->loops, &loop->n);
+  else
+  {
+    LOCK_DOMAIN(resource, birdloop_domain);
+    add_tail(&birdloop_pickup, &loop->n);
+    UNLOCK_DOMAIN(resource, birdloop_domain);
+  }
+
+  /* Finished */
+  atomic_fetch_and_explicit(&loop->thread_transition, ~LTT_MOVE, memory_order_acq_rel);
+}
+
+static struct birdloop *
+birdloop_take(void)
+{
+  struct birdloop *loop = NULL;
+
+  LOCK_DOMAIN(resource, birdloop_domain);
+  if (!EMPTY_LIST(birdloop_pickup))
+  {
+    /* Take the first loop from the pickup list and unlock */
+    loop = SKIP_BACK(struct birdloop, n, HEAD(birdloop_pickup));
+    rem_node(&loop->n);
+    UNLOCK_DOMAIN(resource, birdloop_domain);
+
+    birdloop_set_thread(loop, this_thread);
+
+    /* This thread goes to the end of the pickup list */
+    LOCK_DOMAIN(resource, birdloop_domain);
+    rem_node(&this_thread->n);
+    add_tail(&bird_thread_pickup, &this_thread->n);
+
+    /* If there are more loops to be picked up, wakeup the next thread in order */
+    if (!EMPTY_LIST(birdloop_pickup))
+      wakeup_do_kick(SKIP_BACK(struct bird_thread, n, HEAD(bird_thread_pickup)));
+  }
+  UNLOCK_DOMAIN(resource, birdloop_domain);
+
+  return loop;
+}
+
+static void
+birdloop_drop(struct birdloop *loop)
+{
+  /* Remove loop from this thread's list */
+  rem_node(&loop->n);
+
+  /* Unset loop's thread */
+  if (birdloop_inside(loop))
+    birdloop_set_thread(loop, NULL);
+  else
+  {
+    birdloop_enter(loop);
+    birdloop_set_thread(loop, NULL);
+    birdloop_leave(loop);
+  }
+
+  /* Put loop into pickup list */
+  LOCK_DOMAIN(resource, birdloop_domain);
+  add_tail(&birdloop_pickup, &loop->n);
+  UNLOCK_DOMAIN(resource, birdloop_domain);
+}
+
 static void *
 bird_thread_main(void *arg)
 {
@@ -432,32 +532,17 @@ bird_thread_main(void *arg)
     int timeout = 60000;
 
     /* Pickup new loops */
-    LOCK_DOMAIN(resource, birdloop_domain);
-    if (!EMPTY_LIST(birdloop_pickup))
+    struct birdloop *loop = birdloop_take();
+    if (loop)
     {
-      struct birdloop *loop = SKIP_BACK(struct birdloop, n, HEAD(birdloop_pickup));
-      rem_node(&loop->n);
-      UNLOCK_DOMAIN(resource, birdloop_domain);
-
-      add_tail(&thr->loops, &loop->n);
-
       birdloop_enter(loop);
-      loop->thread = thr;
       if (!EMPTY_LIST(loop->sock_list))
 	refresh_sockets = 1;
       birdloop_leave(loop);
-
-      /* If there are more loops to be picked up, wakeup the next thread */
-      LOCK_DOMAIN(resource, birdloop_domain);
-      rem_node(&thr->n);
-      add_tail(&bird_thread_pickup, &thr->n);
-
-      if (!EMPTY_LIST(birdloop_pickup))
-	wakeup_do_kick(SKIP_BACK(struct bird_thread, n, HEAD(bird_thread_pickup)));
     }
-    UNLOCK_DOMAIN(resource, birdloop_domain);
 
-    struct birdloop *loop; node *nn;
+    /* Run events and timers in every loop */
+    node *nn;
     WALK_LIST2(loop, nn, thr->loops, n)
     {
       birdloop_enter(loop);
@@ -660,29 +745,11 @@ bird_thread_shutdown(void * _ UNUSED)
   /* Leave the thread-picker list to get no more loops */
   LOCK_DOMAIN(resource, birdloop_domain);
   rem_node(&thr->n);
+  UNLOCK_DOMAIN(resource, birdloop_domain);
 
   /* Drop loops including the thread dropper itself */
   while (!EMPTY_LIST(thr->loops))
-  {
-    /* Remove loop from this thread's list */
-    struct birdloop *loop = HEAD(thr->loops);
-    rem_node(&loop->n);
-    UNLOCK_DOMAIN(resource, birdloop_domain);
-
-    /* Unset loop's thread */
-    if (birdloop_inside(loop))
-      loop->thread = NULL;
-    else
-    {
-      birdloop_enter(loop);
-      loop->thread = NULL;
-      birdloop_leave(loop);
-    }
-
-    /* Put loop into pickup list */
-    LOCK_DOMAIN(resource, birdloop_domain);
-    add_tail(&birdloop_pickup, &loop->n);
-  }
+    birdloop_drop(HEAD(thr->loops));
 
   /* Let others know about new loops */
   if (!EMPTY_LIST(birdloop_pickup))
