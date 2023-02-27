@@ -1140,6 +1140,7 @@ proto_loop_stopped(void *ptr)
 
   birdloop_enter(&main_birdloop);
 
+  birdloop_free(p->loop);
   p->loop = &main_birdloop;
   proto_cleanup(p);
 
