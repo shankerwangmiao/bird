@@ -2215,7 +2215,7 @@ rt_init_export(struct rt_exporter *re UNUSED, struct rt_export_hook *hook)
 {
   hook->event.data = hook;
 
-  bmap_init(&hook->seq_map, hook->pool, 1024);
+  bmap_init(&hook->seq_map, hook->pool, 16);
 
   /* Regular export */
   rt_set_export_state(hook, TES_FEEDING);
