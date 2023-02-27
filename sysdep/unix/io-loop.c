@@ -779,6 +779,7 @@ bird_thread_shutdown(void * _ UNUSED)
 
   /* Stop the meta loop */
   birdloop_leave(thr->meta);
+  domain_free(thr->meta->time.domain);
   rfree(thr->meta->pool);
 
   /* Local pages not needed anymore */
