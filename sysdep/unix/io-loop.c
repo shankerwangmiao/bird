@@ -67,8 +67,8 @@ _Thread_local struct birdloop *birdloop_current;
 static _Thread_local struct birdloop *birdloop_wakeup_masked;
 static _Thread_local uint birdloop_wakeup_masked_count;
 
-#define LOOP_TRACE(loop, fmt, args...)	do { if (config->latency_debug) log(L_TRACE "%s (%p): " fmt, domain_name((loop)->time.domain), (loop), ##args); } while (0)
-#define THREAD_TRACE(...)		do { if (config->latency_debug) log(L_TRACE "Thread: " __VA_ARGS__); } while (0)
+#define LOOP_TRACE(loop, fmt, args...)	do { if (config && config->latency_debug) log(L_TRACE "%s (%p): " fmt, domain_name((loop)->time.domain), (loop), ##args); } while (0)
+#define THREAD_TRACE(...)		do { if (config && config->latency_debug) log(L_TRACE "Thread: " __VA_ARGS__); } while (0)
 
 event_list *
 birdloop_event_list(struct birdloop *loop)
