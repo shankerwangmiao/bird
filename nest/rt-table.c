@@ -2842,7 +2842,7 @@ rt_setup(pool *pp, struct rtable_config *cf)
 
   init_list(&t->imports);
 
-  hmap_init(&t->id_map, p, 1024);
+  hmap_init(&t->id_map, p, 64);
   hmap_set(&t->id_map, 0);
 
   t->fh = (struct birdloop_flag_handler) { .hook = rt_flag_handler, };
