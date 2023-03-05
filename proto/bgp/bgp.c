@@ -261,7 +261,7 @@ bgp_listen_create(void *_ UNUSED)
       sk->rx_hook = bgp_incoming_connection;
       sk->err_hook = bgp_listen_sock_err;
 
-      if (sk_open(sk) < 0)
+      if (sk_open(sk, &main_birdloop) < 0)
       {
 	sk_log_error(sk, p->p.name);
 	log(L_ERR "%s: Cannot open listening socket", p->p.name);
@@ -326,8 +326,7 @@ bgp_startup(struct bgp_proto *p)
   if (p->postponed_sk)
   {
     /* Apply postponed incoming connection */
-    sk_unmain(p->postponed_sk);
-    sk_start(p->postponed_sk);
+    sk_reloop(p->postponed_sk, p->p.loop);
 
     bgp_setup_conn(p, &p->incoming_conn);
     bgp_setup_sk(&p->incoming_conn, p->postponed_sk);
@@ -421,12 +420,8 @@ bgp_close_conn(struct bgp_conn *conn)
   rfree(conn->tx_ev);
   conn->tx_ev = NULL;
 
-  if (conn->sk)
-  {
-    sk_stop(conn->sk);
-    rfree(conn->sk);
-    conn->sk = NULL;
-  }
+  rfree(conn->sk);
+  conn->sk = NULL;
 
   mb_free(conn->local_caps);
   conn->local_caps = NULL;
@@ -1207,7 +1202,6 @@ bgp_connect(struct bgp_proto *p)	/* Enter Connect state and start establishing c
   s->tos = IP_PREC_INTERNET_CONTROL;
   s->password = p->cf->password;
   s->tx_hook = bgp_connected;
-  s->flags = SKF_THREAD;
   BGP_TRACE(D_EVENTS, "Connecting to %I%J from local address %I%J",
 	    s->daddr, ipa_is_link_local(s->daddr) ? p->cf->iface : NULL,
 	    s->saddr, ipa_is_link_local(s->saddr) ? s->iface : NULL);
@@ -1215,10 +1209,8 @@ bgp_connect(struct bgp_proto *p)	/* Enter Connect state and start establishing c
   bgp_setup_sk(conn, s);
   bgp_conn_set_state(conn, BS_CONNECT);
 
-  if (sk_open(s) < 0)
+  if (sk_open(s, p->p.loop) < 0)
     goto err;
-
-  sk_start(s);
 
   /* Set minimal receive TTL if needed */
   if (p->cf->ttl_security)
@@ -1364,8 +1356,7 @@ bgp_incoming_connection(sock *sk, uint dummy UNUSED)
   }
 
   rmove(sk, p->p.pool);
-  sk_unmain(sk);
-  sk_start(sk);
+  sk_reloop(sk, p->p.loop);
 
   bgp_setup_conn(p, &p->incoming_conn);
   bgp_setup_sk(&p->incoming_conn, sk);
