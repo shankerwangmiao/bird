@@ -105,6 +105,8 @@
 #include "lib/string.h"
 #include "lib/alloca.h"
 #include "lib/flowspec.h"
+#include <stdlib.h>
+#include <assert.h>
 
 #ifdef CONFIG_BGP
 #include "proto/bgp/bgp.h"
@@ -1066,14 +1068,63 @@ rt_notify_merged(struct channel *c, net *net, rte *new_changed, rte *old_changed
     rte_free(new_free);
 }
 
+static int
+compare_f_val(const struct f_val *v1, const struct f_val *v2)
+{
+  int result = val_compare(v1, v2);
+  
+  if (result != F_CMP_ERROR) {
+    return result;
+  }
+  bug("Sorting routes according to aggregation list: F_CMP_ERROR");
+}
+
+static int
+compare_val_list(const void *fst, const void *snd)
+{
+  const struct f_val *v1 = ((const struct rte_val_list *)fst)->values;
+  const struct f_val *v2 = ((const struct rte_val_list *)snd)->values;
+  int val_count = ((const struct rte_val_list *)fst)->val_count;  
+
+  int result = 0;
+  for (int i = 0; i < val_count; i++) {
+    result = compare_f_val(&v1[i], &v2[i]);
+
+    if (result != 0) {
+      return result;
+    }
+  }
+  return result;
+}
+
+static void
+sort_rte_val_list(const struct rte_val_list *rte_val, size_t count)
+{
+  log("Sorting routes...");
+  qsort((void *)rte_val, count, sizeof(struct rte_val_list), compare_val_list);
+}
+
+static int
+get_routes_count(const struct rte *rt0)
+{
+  int count = 0;
+  for (; rt0; rt0 = rt0->next) {
+    count++;
+  }
+  return count;
+}
+
 static void
 log_attributes(const struct f_val *values, int count)
 {
+    struct buffer buf;
+    LOG_BUFFER_INIT(buf);
+
     for (int i = 0; i < count; i++) {
-      struct buffer buf;
-      LOG_BUFFER_INIT(buf);
       val_format(&values[i], &buf);
       log("%s", &buf.start);
+      memset(buf.start, '\0', LOG_BUFFER_SIZE);
+      buf.pos = buf.start;
     }
 }
 
@@ -1121,14 +1172,27 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
 
   const struct aggr_item_linearized * const linear = c->ai_aggr;
   const struct aggr_item_internal * const items = linear->items;
-  const int count = linear->count;
+  const int attr_count = linear->count;
 
   struct rte *best0 = net->routes;
-  
-  for (rte *rt0 = best0->next; rt0; rt0 = rt0->next) {
-    struct f_val *values = alloca(sizeof(struct f_val) * count);
 
-    for (int it = 0; it < count; it++) {
+  const int rte_count = get_routes_count(best0->next);
+  log("Routes count: %d", rte_count);
+  log("Aggregation list attributes count: %d", attr_count);
+
+  struct rte_val_list *rte_values = alloca(sizeof(struct rte_val_list) * rte_count);
+  int pos = 0;
+
+  for (rte *rt0 = best0->next; rt0; rt0 = rt0->next) {
+    struct f_val *values = alloca(sizeof(struct f_val) * attr_count);
+
+    assert(pos < rte_count);
+    rte_values[pos].rte = rt0;
+    rte_values[pos].values = values;
+    rte_values[pos].val_count = attr_count;
+    pos++;
+
+    for (int it = 0; it < attr_count; it++) {
       int type = items[it].type;
 
       switch (type) {
@@ -1258,9 +1322,10 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
           break;
       }
 
-      log_attributes(values, count);
-    }
-  }
+      sort_rte_val_list(rte_values, rte_count);
+      log_attributes(values, attr_count);
+    }   // for attr_count
+  }     // for rt0
 
 }
 
