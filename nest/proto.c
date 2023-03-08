@@ -669,7 +669,10 @@ channel_reload_stopped(struct rt_export_request *req)
 
   /* Restart reload */
   if (c->reload_pending)
+  {
+    c->reload_pending = 0;
     channel_request_reload(c);
+  }
 
   if (c->channel_state != CS_UP)
     channel_check_stopped(c);
