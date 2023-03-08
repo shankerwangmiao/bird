@@ -658,7 +658,7 @@ bgp_conn_enter_established_state(struct bgp_conn *conn)
 
     int active = loc->ready && rem->ready;
     c->c.disabled = !active;
-    c->c.reloadable = p->route_refresh || c->cf->import_table;
+    c->c.reloadable = p->route_refresh || ((c->c.in_keep & RIK_PREFILTER) == RIK_PREFILTER);
 
     c->index = active ? num++ : 0;
 
@@ -1885,9 +1885,6 @@ bgp_channel_start(struct channel *C)
 
   c->pool = p->p.pool; // XXXX
 
-  if (c->cf->import_table)
-    channel_setup_in_table(C);
-
   if (c->cf->export_table)
     bgp_setup_out_table(c);
 
@@ -2300,7 +2297,6 @@ bgp_channel_reconfigure(struct channel *C, struct channel_config *CC, int *impor
       (new->llgr_time != old->llgr_time) ||
       (new->ext_next_hop != old->ext_next_hop) ||
       (new->add_path != old->add_path) ||
-      (new->import_table != old->import_table) ||
       (new->export_table != old->export_table) ||
       (TABLE(new, igp_table_ip4) != TABLE(old, igp_table_ip4)) ||
       (TABLE(new, igp_table_ip6) != TABLE(old, igp_table_ip6)) ||
@@ -2315,11 +2311,13 @@ bgp_channel_reconfigure(struct channel *C, struct channel_config *CC, int *impor
       (new->aigp != old->aigp) ||
       (new->cost != old->cost))
   {
-    /* import_changed itself does not force ROUTE_REFRESH when import_table is active */
-    if ((c->c.in_keep & RIK_PREFILTER) && (c->c.channel_state == CS_UP))
+    /* If import table is active and route refresh is possible, we just ask for route refresh */
+    if ((c->c.in_keep & RIK_PREFILTER) && (c->c.channel_state == CS_UP) && p->route_refresh)
       bgp_schedule_packet(p->conn, c, PKT_ROUTE_REFRESH);
 
-    *import_changed = 1;
+    /* Otherwise we do complete reload */
+    else
+      *import_changed = 1;
   }
 
   if (!ipa_equal(new->next_hop_addr, old->next_hop_addr) ||
