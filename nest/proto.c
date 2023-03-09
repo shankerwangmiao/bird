@@ -59,18 +59,6 @@ static void channel_check_stopped(struct channel *c);
 static inline int proto_is_done(struct proto *p)
 { return (p->proto_state == PS_DOWN) && proto_is_inactive(p); }
 
-#define PROTO_ENTER_FROM_MAIN(p)    ({ \
-    ASSERT_DIE(birdloop_inside(&main_birdloop)); \
-    struct birdloop *_loop = (p)->loop; \
-    if (_loop != &main_birdloop) birdloop_enter(_loop); \
-    _loop; \
-    })
-
-#define PROTO_LEAVE_FROM_MAIN(loop) ({ if (loop != &main_birdloop) birdloop_leave(loop); })
-
-#define PROTO_LOCKED_FROM_MAIN(p)	for (struct birdloop *_proto_loop = PROTO_ENTER_FROM_MAIN(p); _proto_loop; PROTO_LEAVE_FROM_MAIN(_proto_loop), (_proto_loop = NULL))
-
-
 static inline int channel_is_active(struct channel *c)
 { return (c->channel_state != CS_DOWN); }
 

@@ -126,13 +126,13 @@
 
 #include "bgp.h"
 
-
 static void bgp_listen_create(void *);
 
 static list STATIC_LIST_INIT(bgp_sockets);		/* Global list of listening sockets */
 static list STATIC_LIST_INIT(bgp_listen_pending);	/* Global list of listening socket open requests */
 static event bgp_listen_event = { .hook = bgp_listen_create };
 
+DOMAIN(rtable) bgp_listen_domain;
 
 static void bgp_connect(struct bgp_proto *p);
 static void bgp_active(struct bgp_proto *p);
@@ -151,6 +151,13 @@ static void bgp_graceful_restart_feed(struct bgp_channel *c);
 static inline int
 bgp_setup_auth(struct bgp_proto *p, int enable)
 {
+  /* Beware. This is done from main_birdloop and protocol birdloop is NOT ENTERED.
+   * Anyway, we are only accessing:
+   *  - protocol config which can be changed only from main_birdloop (reconfig)
+   *  - protocol listen socket which is always driven by main_birdloop
+   *  - protocol name which is set on reconfig
+   */
+
   if (p->cf->password && p->listen.sock)
   {
     ip_addr prefix = p->cf->remote_ip;
@@ -184,14 +191,21 @@ bgp_setup_auth(struct bgp_proto *p, int enable)
 static void
 bgp_close(struct bgp_proto *p)
 {
+  LOCK_DOMAIN(rtable, bgp_listen_domain);
+
   struct bgp_listen_request *req = &p->listen;
   struct bgp_socket *bs = req->sock;
 
-  req->sock = NULL;
-  rem_node(&req->n);
+  if (bs)
+  {
+    req->sock = NULL;
+    rem_node(&req->n);
 
-  if (bs && EMPTY_LIST(bs->requests))
-    ev_send(&global_event_list, &bgp_listen_event);
+    if (bs && EMPTY_LIST(bs->requests))
+      ev_send(&global_event_list, &bgp_listen_event);
+  }
+
+  UNLOCK_DOMAIN(rtable, bgp_listen_domain);
 }
 
 /**
@@ -206,6 +220,8 @@ bgp_close(struct bgp_proto *p)
 static void
 bgp_open(struct bgp_proto *p)
 {
+  LOCK_DOMAIN(rtable, bgp_listen_domain);
+
   struct bgp_listen_request *req = &p->listen;
   /* We assume that cf->iface is defined iff cf->local_ip is link-local */
   req->iface = p->cf->strict_bind ? p->cf->iface : NULL;
@@ -219,16 +235,27 @@ bgp_open(struct bgp_proto *p)
 
   add_tail(&bgp_listen_pending, &req->n);
   ev_send(&global_event_list, &bgp_listen_event);
+
+  UNLOCK_DOMAIN(rtable, bgp_listen_domain);
 }
 
 static void
 bgp_listen_create(void *_ UNUSED)
 {
+  ASSERT_DIE(birdloop_inside(&main_birdloop));
   uint flag_mask = SKF_FREEBIND;
 
-  struct bgp_listen_request *req;
-  WALK_LIST_FIRST(req, bgp_listen_pending)
-  {
+  while (1) {
+    LOCK_DOMAIN(rtable, bgp_listen_domain);
+
+    if (EMPTY_LIST(bgp_listen_pending))
+    {
+      UNLOCK_DOMAIN(rtable, bgp_listen_domain);
+      break;
+    }
+
+    /* Get the first request to match */
+    struct bgp_listen_request *req = HEAD(bgp_listen_pending);
     struct bgp_proto *p = SKIP_BACK(struct bgp_proto, listen, req);
     rem_node(&req->n);
 
@@ -247,6 +274,8 @@ bgp_listen_create(void *_ UNUSED)
       BGP_TRACE(D_EVENTS, "Found a listening socket: %p", bs);
     else
     {
+      /* Allocating new socket from global protocol pool.
+       * We can do this in main_birdloop. */
       sock *sk = sk_new(proto_pool);
       sk->type = SK_TCP_PASSIVE;
       sk->ttl = 255;
@@ -266,8 +295,9 @@ bgp_listen_create(void *_ UNUSED)
 	sk_log_error(sk, p->p.name);
 	log(L_ERR "%s: Cannot open listening socket", p->p.name);
 	rfree(sk);
-	bgp_initiate_disable(p, BEM_NO_SOCKET);
+	UNLOCK_DOMAIN(rtable, bgp_listen_domain);
 
+	bgp_initiate_disable(p, BEM_NO_SOCKET);
 	continue;
       }
 
@@ -281,17 +311,25 @@ bgp_listen_create(void *_ UNUSED)
       BGP_TRACE(D_EVENTS, "Created new listening socket: %p", bs);
     }
 
-    add_tail(&bs->requests, &req->n);
     req->sock = bs;
+    add_tail(&bs->requests, &req->n);
 
     if (bgp_setup_auth(p, 1) < 0)
     {
-      bgp_close(p);
+      rem_node(&req->n);
+      req->sock = NULL;
+
+      UNLOCK_DOMAIN(rtable, bgp_listen_domain);
+
       bgp_initiate_disable(p, BEM_INVALID_MD5);
+      continue;
     }
+
+    UNLOCK_DOMAIN(rtable, bgp_listen_domain);
   }
 
   /* Cleanup leftover listening sockets */
+  LOCK_DOMAIN(rtable, bgp_listen_domain);
   struct bgp_socket *bs;
   node *nxt;
   WALK_LIST_DELSAFE(bs, nxt, bgp_sockets)
@@ -301,6 +339,7 @@ bgp_listen_create(void *_ UNUSED)
       rem_node(&bs->n);
       mb_free(bs);
     }
+  UNLOCK_DOMAIN(rtable, bgp_listen_domain);
 }
 
 static inline struct bgp_channel *
@@ -363,13 +402,19 @@ bgp_initiate(struct bgp_proto *p)
 static void
 bgp_initiate_disable(struct bgp_proto *p, int err_val)
 {
-  p->p.disabled = 1;
-  bgp_store_error(p, NULL, BE_MISC, err_val);
-
-  p->neigh = NULL;
-  proto_notify_state(&p->p, PS_DOWN);
-
-  return;
+  PROTO_LOCKED_FROM_MAIN(&p->p)
+  {
+    /* The protocol may be already down for another reason.
+     * Shutdown the protocol only if it isn't already shutting down. */
+    switch (p->p.proto_state)
+    {
+      case PS_START:
+      case PS_UP:
+	p->p.disabled = 1;
+	bgp_store_error(p, NULL, BE_MISC, err_val);
+	bgp_stop(p, err_val, NULL, 0);
+    }
+  }
 }
 
 /**
@@ -1246,6 +1291,8 @@ bgp_find_proto(sock *sk)
   /* sk->iface is valid only if src or dst address is link-local */
   int link = ipa_is_link_local(sk->saddr) || ipa_is_link_local(sk->daddr);
 
+  LOCK_DOMAIN(rtable, bgp_listen_domain);
+
   WALK_LIST(req, bs->requests)
   {
     struct bgp_proto *p = SKIP_BACK(struct bgp_proto, listen, req);
@@ -1264,6 +1311,7 @@ bgp_find_proto(sock *sk)
     }
   }
 
+  UNLOCK_DOMAIN(rtable, bgp_listen_domain);
   return best;
 }
 
@@ -2792,4 +2840,5 @@ void bgp_build(void)
 {
   proto_build(&proto_bgp);
   bgp_register_attrs();
+  bgp_listen_domain = DOMAIN_NEW(rtable, "BGP Listen Sockets");
 }
