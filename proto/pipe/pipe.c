@@ -145,46 +145,20 @@ pipe_postconfig(struct proto_config *CF)
 }
 
 static int
-pipe_configure_ra_mode_import(struct pipe_config *cf)
-{
-    if (cf->config_import.use_aggregator) {
-        return RA_AGGREGATED;
-    }
-
-    if (cf->config_import.limit) {
-        return RA_MERGED;
-    }
-
-    return RA_ANY;
-}
-
-static int
-pipe_configure_ra_mode_export(struct pipe_config *cf)
-{
-    if (cf->config_export.use_aggregator) {
-        return RA_AGGREGATED;
-    }
-
-    if (cf->config_export.limit) {
-        return RA_MERGED;
-    }
-
-    return RA_ANY;
-}
-
-static int
 pipe_configure_channels(struct pipe_proto *p, struct pipe_config *cf)
 {
   struct channel_config *cc = proto_cf_main_channel(&cf->c);
 
+  log("pipe configure channels: ra_mode: %d", cc->ra_mode);
+  log("pipe configure channels: ai_aggr: %p", cc->ai_aggr);
   struct channel_config pri_cf = {
     .name = "pri",
     .channel = cc->channel,
     .table = cc->table,
     .out_filter = cc->out_filter,
     .in_limit = cc->in_limit,
-    .ra_mode = pipe_configure_ra_mode_export(cf),
-    .merge_limit = cf->config_export.limit,
+    .ra_mode = cc->ra_mode,
+    .ai_aggr = cc->ai_aggr,
     .debug = cc->debug,
     .rpki_reload = cc->rpki_reload,
   };
@@ -195,10 +169,7 @@ pipe_configure_channels(struct pipe_proto *p, struct pipe_config *cf)
     .table = cf->peer,
     .out_filter = cc->in_filter,
     .in_limit = cc->out_limit,
-    //.ra_mode = cf->merge_limit_import ? RA_MERGED : RA_ANY,
-    //.merge_limit = cf->merge_limit_import,
-    .ra_mode = pipe_configure_ra_mode_import(cf),
-    .merge_limit = cf->config_import.limit,
+    .ra_mode = RA_ANY,
     .debug = cc->debug,
     .rpki_reload = cc->rpki_reload,
   };
