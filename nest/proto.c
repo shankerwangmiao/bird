@@ -101,9 +101,9 @@ aggr_item_same(const struct aggr_item_internal *fst, const struct aggr_item_inte
     case AGGR_ITEM_TERM:
       return f_same(fst->line, snd->line);
     case AGGR_ITEM_STATIC_ATTR:
-      return memcmp(&fst->sa, &snd->sa, sizeof(struct f_static_attr));
+      return memcmp(&fst->sa, &snd->sa, sizeof(struct f_static_attr)) == 0;
     case AGGR_ITEM_DYNAMIC_ATTR:
-      return memcmp(&fst->da, &snd->da, sizeof(struct f_dynamic_attr));
+      return memcmp(&fst->da, &snd->da, sizeof(struct f_dynamic_attr)) == 0;
     default:
       bug("Broken aggregating data");
   }
