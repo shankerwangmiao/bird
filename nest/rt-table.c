@@ -106,7 +106,6 @@
 #include "lib/alloca.h"
 #include "lib/flowspec.h"
 #include <stdlib.h>
-#include <assert.h>
 
 #ifdef CONFIG_BGP
 #include "proto/bgp/bgp.h"
@@ -1132,61 +1131,30 @@ static void
 rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_changed,
 		 rte *new_best, rte *old_best, int refeed)
 {
-  // struct proto *p = c->proto;
-  rte *new_free = NULL;
-
-  /* We assume that all rte arguments are either NULL or rte_is_valid() */
-
-  /* This check should be done by the caller */
-  if (!new_best && !old_best)
-    return;
-
-  /* Check whether the change is relevant to the merged route */
-  if ((new_best == old_best) &&
-      (new_changed != old_changed) &&
-      !rte_mergable(new_best, new_changed) &&
-      !rte_mergable(old_best, old_changed))
-    return;
-
-  if (new_best)
-    c->stats.exp_updates_received++;
-  else
-    c->stats.exp_withdraws_received++;
-
-  /* Prepare new merged route */
-  if (new_best)
-    new_best = rt_export_merged(c, net, &new_free, rte_update_pool, 0);
-
-  /* Check old merged route */
-  if (old_best && !bmap_test(&c->export_map, old_best->id))
-    old_best = NULL;
-
-  if (!new_best && !old_best)
-    return;
-
-  do_rt_notify(c, net, new_best, old_best, refeed);
-
-  /* Discard temporary rte */
-  if (new_free)
-    rte_free(new_free);
-
   const struct aggr_item_linearized * const linear = c->ai_aggr;
   const struct aggr_item_internal * const items = linear->items;
   const int attr_count = linear->count;
 
-  struct rte *best0 = net->routes;
+  if (net->routes == NULL)
+    return;
 
+  struct rte *best0 = net->routes;
   const int rte_count = get_routes_count(best0->next);
+
+  if (rte_count == 0)
+    return;
+
+  log("---- RT NOTIFY AGGREGATED ----");
   log("Routes count: %d", rte_count);
   log("Aggregation list attributes count: %d", attr_count);
+  log("aggr_item_linearized: %p", linear);
 
   struct rte_val_list *rte_values = alloca(sizeof(struct rte_val_list) * rte_count);
   int pos = 0;
 
-  for (rte *rt0 = best0->next; rt0; rt0 = rt0->next) {
+  for (rte *rt0 = best0; rt0; rt0 = rt0->next) {
     struct f_val *values = alloca(sizeof(struct f_val) * attr_count);
 
-    assert(pos < rte_count);
     rte_values[pos].rte = rt0;
     rte_values[pos].values = values;
     rte_values[pos].val_count = attr_count;
@@ -1321,12 +1289,10 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
         default:
           break;
       }
-
-      sort_rte_val_list(rte_values, rte_count);
-      log_attributes(values, attr_count);
     }   // for attr_count
+    log_attributes(values, attr_count);
   }     // for rt0
-
+  sort_rte_val_list(rte_values, rte_count);
 }
 
 /**
