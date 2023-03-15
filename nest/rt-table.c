@@ -1121,7 +1121,7 @@ log_attributes(const struct f_val *values, int count)
 
     for (int i = 0; i < count; i++) {
       val_format(&values[i], &buf);
-      log("%s", &buf.start);
+      log("%s", buf.start);
       memset(buf.start, '\0', LOG_BUFFER_SIZE);
       buf.pos = buf.start;
     }
