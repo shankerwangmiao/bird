@@ -303,8 +303,12 @@ proto_item:
 aggr_list:
    aggr_item
  | aggr_list ',' aggr_item {
-       $$ = $3;
-       $$->next = $1;
+       if ($3 == NULL) {
+         $$ = $1;
+       } else {
+         $$ = $3;
+         $$->next = $1;
+       }
    }
  ;
 
@@ -322,6 +326,7 @@ aggr_item:
           $$->internal.da = *$1->attribute;
           break;
         case SYM_CONSTANT_RANGE:
+          $$ = NULL;
           break;
         default:
           cf_error("Can't aggregate on symbol type %s.", cf_symbol_class_name($1));
@@ -347,6 +352,7 @@ aggr_definition:
       for (const struct aggr_item *ai = $3; ai; ai = ai->next) {
         if (ai->internal.type == AGGR_ITEM_STATIC_ATTR && ai->internal.sa.sa_code == SA_NET) {
           net_present = 1;
+          continue;
         }
         count++;
       }
@@ -357,16 +363,42 @@ aggr_definition:
 
      size_t allocated = sizeof(struct aggr_item_linearized) + sizeof(struct aggr_item_internal) * count;
      struct aggr_item_linearized *linear = cfg_allocz(allocated);
-     linear->count = count;
 
-     const struct aggr_item *ai = $3;
+     log("nest/config.Y: linear: %p, allocated: %d, count: %d", linear, allocated, count);
 
-     for (int i = 0; i < count; i++) {
-       if (ai->internal.sa.sa_code != SA_NET) {
-         linear->items[i] = ai->internal;
+     int pos = 0;
+     for (const struct aggr_item *ai = $3; ai; ai = ai->next) {
+       if (ai->internal.type == AGGR_ITEM_STATIC_ATTR && ai->internal.sa.sa_code == SA_NET) {
+         continue;
        }
-       ai = ai->next;
+       linear->items[pos++] = ai->internal;
      }
+
+     linear->count = pos;
+
+     const struct aggr_item_linearized *ail = linear;
+     int node = 1;
+
+     if (ail != NULL) {
+       for (int i = 0; i < ail->count; i++) {
+         switch (ail->items[i].type) {
+           case AGGR_ITEM_TERM:
+             log("node %d, type: term", node);
+             break;
+           case AGGR_ITEM_STATIC_ATTR:
+             log("node %d, type: static", node);
+             break;
+           case AGGR_ITEM_DYNAMIC_ATTR:
+             log("node %d, type: dynamic", node);
+             break;
+           default:
+             log("node %d, type: other", node);
+             break;
+         }
+         node++;
+       }
+     }
+
      $$ = linear;
   }
   ;
@@ -385,7 +417,7 @@ channel_item_:
    }
  | IMPORT imexport { this_channel->in_filter = $2; }
  | EXPORT imexport { this_channel->out_filter = $2; }
- | EXPORT aggr_definition { this_channel->ai_aggr = $2; }
+ | EXPORT aggr_definition { this_channel->ai_aggr = $2; this_channel->ra_mode = RA_AGGREGATED; }
  | RECEIVE LIMIT limit_spec { this_channel->rx_limit = $3; }
  | IMPORT LIMIT limit_spec { this_channel->in_limit = $3; }
  | EXPORT LIMIT limit_spec { this_channel->out_limit = $3; }
