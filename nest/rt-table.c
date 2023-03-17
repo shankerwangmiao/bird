@@ -90,6 +90,10 @@
 
 #undef LOCAL_DEBUG
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "nest/bird.h"
 #include "nest/route.h"
 #include "nest/protocol.h"
@@ -1079,28 +1083,33 @@ compare_f_val(const struct f_val *v1, const struct f_val *v2)
 }
 
 static int
-compare_val_list(const void *fst, const void *snd)
+compare_val_list(const void *fst, const void *snd, void *count)
 {
-  const struct f_val *v1 = ((const struct rte_val_list *)fst)->values;
-  const struct f_val *v2 = ((const struct rte_val_list *)snd)->values;
-  int val_count = ((const struct rte_val_list *)fst)->val_count;  
+  const int val_count = *(int *)count;
 
-  int result = 0;
-  for (int i = 0; i < val_count; i++) {
-    result = compare_f_val(&v1[i], &v2[i]);
-
-    if (result != 0) {
+  for (int i = 0; i < val_count; i++)
+  {
+    /* This function receives two void pointers.
+     * Since we are sorting array of pointers, we have to cast this void pointer to (struct rte_val_list **) (pointer to first array element, which is a pointer).
+     * Dereference it once to access this element, which is (struct rte_val_list *).
+     * Finally access f_val at position "i" and take its address, thus getting (struct f_val *).
+     */
+    const struct f_val *v1 = &(*(struct rte_val_list **)fst)->values[i];
+    const struct f_val *v2 = &(*(struct rte_val_list **)snd)->values[i];
+    int result = compare_f_val(v1, v2);
+    
+    if (result != 0)
       return result;
-    }
   }
-  return result;
+
+  return 0;
 }
 
 static void
-sort_rte_val_list(const struct rte_val_list *rte_val, size_t count)
+sort_rte_val_list(const struct rte_val_list **rte_val, size_t rte_val_list_count, const int *val_count)
 {
   log("Sorting routes...");
-  qsort((void *)rte_val, count, sizeof(struct rte_val_list), compare_val_list);
+  qsort_r(rte_val, rte_val_list_count, sizeof(struct rte_val_list *), compare_val_list, (void *)val_count);
 }
 
 static int
@@ -1139,7 +1148,7 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
     return;
 
   struct rte *best0 = net->routes;
-  const int rte_count = get_routes_count(best0->next);
+  const size_t rte_count = get_routes_count(best0);
 
   if (rte_count == 0)
     return;
@@ -1149,16 +1158,13 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
   log("Aggregation list attributes count: %d", attr_count);
   log("aggr_item_linearized: %p", linear);
 
-  struct rte_val_list *rte_values = alloca(sizeof(struct rte_val_list) * rte_count);
+  const struct rte_val_list **rte_val_list_ptr = alloca(sizeof(struct rte_val_list *) * rte_count);
   int pos = 0;
 
   for (rte *rt0 = best0; rt0; rt0 = rt0->next) {
-    struct f_val *values = alloca(sizeof(struct f_val) * attr_count);
-
-    rte_values[pos].rte = rt0;
-    rte_values[pos].values = values;
-    rte_values[pos].val_count = attr_count;
-    pos++;
+    struct rte_val_list *rte_val = alloca(sizeof(struct rte_val_list) + sizeof(struct f_val) * attr_count);
+    rte_val->rte = rt0;
+    rte_val_list_ptr[pos++] = rte_val;
 
     for (int it = 0; it < attr_count; it++) {
       int type = items[it].type;
@@ -1167,7 +1173,7 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
         case AGGR_ITEM_TERM: {
           const struct f_line *line = items[it].line;
           struct rte *rt1 = rt0;
-          enum filter_return fret = f_aggr_eval_line(line, &rt1, rte_update_pool, &values[it]);
+          enum filter_return fret = f_aggr_eval_line(line, &rt1, rte_update_pool, &rte_val->values[it]);
 
           if (rt1 != rt0) {
             rte_free(rt1);
@@ -1184,9 +1190,9 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
           struct rte *rt1 = rt0;
           struct rta *rta = rt1->attrs;
 
-#define RESULT(_type, value, result)    do {                                    \
-                                          values[it].type = _type;              \
-                                          values[it].val.value = result;        \
+#define RESULT(_type, value, result)    do {                                        \
+                                          rte_val->values[it].type = _type;         \
+                                          rte_val->values[it].val.value = result;   \
                                         } while (0)
             switch (sa.sa_code) {
               case SA_FROM:	RESULT(sa.f_type, ip, rta->from); break;
@@ -1211,9 +1217,9 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
           struct rte *rt1 = rt0;
           struct rta *rta = rt1->attrs;
 
-#define RESULT(_type, value, result)    do {                                \
-                                          values[it].type = _type;          \
-                                          values[it].val.value = result;    \
+#define RESULT(_type, value, result)    do {                                        \
+                                          rte_val->values[it].type = _type;         \
+                                          rte_val->values[it].val.value = result;   \
                                         } while (0)
 
           eattr *e = ea_find(rta->eattrs, da.ea_code);
@@ -1244,8 +1250,8 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
 	        }
 
 	        /* Undefined value */
-#define RESULT_VOID     do {                            \
-                          values[it].type = T_VOID;     \
+#define RESULT_VOID     do {                                    \
+                          rte_val->values[it].type = T_VOID;    \
                         } while (0)
 	        RESULT_VOID;
 #undef RESULT_VOID
@@ -1290,9 +1296,9 @@ rt_notify_aggregated(struct channel *c, net *net, rte *new_changed, rte *old_cha
           break;
       }
     }   // for attr_count
-    log_attributes(values, attr_count);
+    log_attributes(&rte_val->values[0], attr_count);
   }     // for rt0
-  sort_rte_val_list(rte_values, rte_count);
+  sort_rte_val_list(rte_val_list_ptr, rte_count, &attr_count);
 }
 
 /**

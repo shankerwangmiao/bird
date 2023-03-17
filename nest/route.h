@@ -788,8 +788,7 @@ struct aggr_item_linearized {
 
 struct rte_val_list {
   const struct rte *rte;
-  const struct f_val *values;
-  int val_count;
+  struct f_val values[];
 };
 
 #endif
