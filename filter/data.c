@@ -217,6 +217,8 @@ val_compare(const struct f_val *v1, const struct f_val *v2)
     return net_compare(v1->val.net, v2->val.net);
   case T_STRING:
     return strcmp(v1->val.s, v2->val.s);
+  case T_PATH:
+    return as_path_compare(v1->val.ad, v2->val.ad);
   default:
     return F_CMP_ERROR;
   }
