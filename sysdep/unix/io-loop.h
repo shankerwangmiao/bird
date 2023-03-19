@@ -47,8 +47,6 @@ struct birdloop
 
   uint ping_pending;
 
-  uint links;
-
   _Atomic u32 thread_transition;
 #define LTT_PING  1
 #define LTT_MOVE  2

@@ -81,14 +81,13 @@ typedef struct birdsock {
   const char *err;			/* Error message */
   struct ssh_sock *ssh;			/* Used in SK_SSH */
   struct birdloop *loop;		/* BIRDLoop owning this socket */
-  struct event reloop;			/* Reloop event */
 } sock;
 
 sock *sock_new(pool *);			/* Allocate new socket */
 #define sk_new(X) sock_new(X)		/* Wrapper to avoid name collision with OpenSSL */
 
 int sk_open(sock *, struct birdloop *);		/* Open socket */
-void sk_reloop(sock *, struct birdloop *);	/* Move socket to another loop */
+void sk_reloop(sock *, struct birdloop *);	/* Move socket to another loop. Both loops must be locked. */
 
 int sk_rx_ready(sock *s);
 _Bool sk_tx_pending(sock *s);

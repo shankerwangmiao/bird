@@ -367,25 +367,17 @@ birdloop_remove_socket(struct birdloop *loop, sock *s)
   s->index = -1;
 }
 
-static void
-sk_reloop_hook(void *_vs)
-{
-  sock *s = _vs;
-  birdloop_add_socket(birdloop_current, s);
-}
-
 void
 sk_reloop(sock *s, struct birdloop *loop)
 {
-  ASSERT_DIE(s->loop);
+  ASSERT_DIE(birdloop_inside(loop));
+  ASSERT_DIE(birdloop_inside(s->loop));
+
+  if (loop == s->loop)
+    return;
+
   birdloop_remove_socket(s->loop, s);
-
-  s->reloop = (event) {
-    .hook = sk_reloop_hook,
-    .data = s,
-  };
-
-  ev_send_loop(loop, &s->reloop);
+  birdloop_add_socket(loop, s);
 }
 
 void
@@ -1191,7 +1183,6 @@ birdloop_stop_self(struct birdloop *loop, void (*stopped)(void *data), void *dat
 void
 birdloop_free(struct birdloop *loop)
 {
-  ASSERT_DIE(loop->links == 0);
   ASSERT_DIE(loop->thread == NULL);
 
   domain_free(loop->time.domain);
@@ -1259,20 +1250,6 @@ birdloop_unmask_wakeups(struct birdloop *loop)
     wakeup_do_kick(loop->thread);
 
   birdloop_wakeup_masked_count = 0;
-}
-
-void
-birdloop_link(struct birdloop *loop)
-{
-  ASSERT_DIE(birdloop_inside(loop));
-  loop->links++;
-}
-
-void
-birdloop_unlink(struct birdloop *loop)
-{
-  ASSERT_DIE(birdloop_inside(loop));
-  loop->links--;
 }
 
 void
