@@ -50,6 +50,7 @@ struct static_route {
   byte use_bfd;				/* Configured to use BFD */
   struct bfd_request *bfd_req;		/* BFD request, if BFD is used */
   mpls_label_stack *mls;		/* MPLS label stack; may be NULL */
+  u32 bfd_label;      /* Label for referred BFD session */
 };
 
 /*

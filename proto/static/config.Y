@@ -46,8 +46,7 @@ static_route_finish(void)
 CF_DECLS
 
 CF_KEYWORDS(STATIC, ROUTE, VIA, DROP, REJECT, PROHIBIT, PREFERENCE, CHECK, LINK)
-CF_KEYWORDS(ONLINK, WEIGHT, RECURSIVE, IGP, TABLE, BLACKHOLE, UNREACHABLE, BFD, MPLS)
-
+CF_KEYWORDS(ONLINK, WEIGHT, RECURSIVE, IGP, TABLE, BLACKHOLE, UNREACHABLE, BFD, MPLS, TRACK)
 
 CF_GRAMMAR
 
@@ -98,6 +97,11 @@ stat_nexthop:
   }
   | stat_nexthop BFD bool {
     this_snh->use_bfd = $3; cf_check_bfd($3);
+    this_snh->bfd_label = 0;
+  }
+  | stat_nexthop BFD TRACK bfd_neigh_label {
+    this_snh->use_bfd = 1; cf_check_bfd(1);
+    this_snh->bfd_label = $4;
   }
 ;
 

@@ -83,6 +83,7 @@ struct bfd_neighbor
 
   u8 multihop;
   u8 active;
+  u32 label;
 };
 
 struct bfd_proto

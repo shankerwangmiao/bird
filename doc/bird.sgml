@@ -2198,7 +2198,7 @@ protocol bfd [&lt;name&gt;] {
 		multiplier &lt;num&gt;;
 		passive &lt;switch&gt;;
 	};
-	neighbor &lt;ip&gt; [dev "&lt;interface&gt;"] [local &lt;ip&gt;] [multihop &lt;switch&gt;];
+	neighbor &lt;ip&gt; [dev "&lt;interface&gt;"] [local &lt;ip&gt;] [multihop &lt;switch&gt;] [label &lt;num&gt;];
 }
 </code>
 
@@ -2233,7 +2233,7 @@ protocol bfd [&lt;name&gt;] {
 	connected sessions. Currently only one such definition (for all multihop
 	sessions) could be used.
 
-	<tag><label id="bfd-neighbor">neighbor <m/ip/ [dev "<m/interface/"] [local <m/ip/] [multihop <m/switch/]</tag>
+	<tag><label id="bfd-neighbor">neighbor <m/ip/ [dev "<m/interface/"] [local <m/ip/] [multihop <m/switch/] [label <m/num/]</tag>
 	BFD sessions are usually created on demand as requested by other
 	protocols (like OSPF or BGP). This option allows to explicitly add
 	a BFD session to the specified neighbor regardless of such requests.
@@ -2242,7 +2242,11 @@ protocol bfd [&lt;name&gt;] {
 	optional specification of used interface and local IP. By default
 	the neighbor must be directly connected, unless the session is
 	configured as multihop. Note that local IP must be specified for
-	multihop sessions.
+	multihop sessions. If the optional <cf/label/ is specified, it is
+	used to identify the session in the BFD protocol instance and can
+	be later tracked explicitly by other protocols. The choice of the
+	label is up to the user other than zero, but it should be unique
+	within all BFD protocol instances.
 </descrip>
 
 <p>Session specific options (part of <cf/interface/ and <cf/multihop/ definitions):
@@ -2338,6 +2342,7 @@ protocol bfd {
 	neighbor 192.168.1.10;
 	neighbor 192.168.2.2 dev "eth2";
 	neighbor 192.168.10.1 local 192.168.1.1 multihop;
+	neighbor 192.168.10.2 local 192.168.1.1 multihop label 10;
 }
 </code>
 
@@ -5314,6 +5319,17 @@ options (<cf/bfd/ and <cf/weight 1/), the second nexthop has just <cf/weight 2/.
 	that BFD protocol also has to be configured, see <ref id="bfd" name="BFD">
 	section for details. Default value is no.
 
+	<tag><label id="static-route-bfd-track">bfd track <m/num/</tag>
+	Like <cf/bfd/ option, but the BFD session is not created by the Static
+	protocol, but it is expected to be already created by one of the neighbors
+	labeled by the given number in the <cf/neighbor/ statement of the
+	<ref id="bfd" name="BFD"> protocol. If such a BFD session is not configured,
+	the route is not installed until a matching session is created later by a
+	config update and established. It is useful when the next hop liveness
+	is confirmed with another BFD (maybe multihop) peer other than the next hop
+	itself. It is not possible to use both <cf/bfd/ and <cf/bfd track/ options
+	for the same nexthop. Default value is not to track any BFD session.
+
 	<tag><label id="static-route-mpls">mpls <m/num/[/<m/num/[/<m/num/[...]]]</tag>
 	MPLS labels that should be pushed to packets forwarded by the route.
 	The option could be used for both IP routes (on MPLS ingress routers)
@@ -5516,6 +5532,7 @@ protocol static {
 	route 2001:db8:40::/48 via "eth2";		# Direct route to eth2
 	route 2001:db8::/32 unreachable;		# Unreachable route
 	route ::/0 via 2001:db8:1::1 bfd;		# BFD-controlled default route
+	route 2001:db8:50::/48 via fe80::1%'eth1.70' bfd track 10;		# BFD-controlled default route, track bfd session labeled 10
 }
 </code>
 

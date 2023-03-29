@@ -143,7 +143,7 @@ CF_ENUM_PX(T_ENUM_AF, AF_, AFI_, IPV4, IPV6)
 %type <s> optproto
 %type <ra> r_args
 %type <sd> sym_args
-%type <i> proto_start echo_mask echo_size debug_mask debug_list debug_flag mrtdump_mask mrtdump_list mrtdump_flag export_mode limit_action net_type tos password_algorithm
+%type <i> proto_start echo_mask echo_size debug_mask debug_list debug_flag mrtdump_mask mrtdump_list mrtdump_flag export_mode limit_action net_type tos password_algorithm bfd_neigh_label
 %type <ps> proto_patt proto_patt2
 %type <cc> channel_start proto_channel
 %type <cl> limit_spec
@@ -603,6 +603,15 @@ bfd_items:
 
 bfd_opts:
    '{' bfd_items '}'
+ ;
+
+bfd_neigh_label:
+ expr {
+  if ($1 == 0){
+    cf_error("BFD label cannot be zero");
+  }
+  $$ = $1;
+ }
  ;
 
 /* Core commands */

@@ -1380,7 +1380,7 @@ bgp_update_bfd(struct bgp_proto *p, const struct bfd_options *bfd)
   if (bfd && !p->bfd_req && !bgp_is_dynamic(p))
     p->bfd_req = bfd_request_session(p->p.pool, p->remote_ip, p->local_ip,
 				     p->cf->multihop ? NULL : p->neigh->iface,
-				     p->p.vrf, bgp_bfd_notify, p, bfd);
+				     p->p.vrf, 0, bgp_bfd_notify, p, bfd);
 
   if (!bfd && p->bfd_req)
   {

@@ -24,11 +24,11 @@ CF_DECLS
 CF_KEYWORDS(BFD, MIN, IDLE, RX, TX, INTERVAL, MULTIPLIER, PASSIVE,
 	INTERFACE, MULTIHOP, NEIGHBOR, DEV, LOCAL, AUTHENTICATION,
 	NONE, SIMPLE, METICULOUS, KEYED, MD5, SHA1, IPV4, IPV6, DIRECT,
-	STRICT, BIND)
+	STRICT, BIND, LABEL)
 
 %type <iface> bfd_neigh_iface
 %type <a> bfd_neigh_local
-%type <i> bfd_neigh_multihop bfd_auth_type
+%type <i> bfd_neigh_multihop bfd_auth_type bfd_neigh_option_label
 
 CF_GRAMMAR
 
@@ -164,7 +164,14 @@ bfd_neigh_multihop:
  | MULTIHOP bool { $$ = $2; }
  ;
 
-bfd_neighbor: ipa bfd_neigh_iface bfd_neigh_local bfd_neigh_multihop
+bfd_neigh_option_label:
+   /* empty */ { $$ = 0; }
+ | LABEL bfd_neigh_label {
+  $$ = $2;
+ }
+ ;
+
+bfd_neighbor: ipa bfd_neigh_iface bfd_neigh_local bfd_neigh_multihop bfd_neigh_option_label
 {
   this_bfd_neighbor = cfg_allocz(sizeof(struct bfd_neighbor));
   add_tail(&BFD_CFG->neigh_list, NODE this_bfd_neighbor);
@@ -173,12 +180,21 @@ bfd_neighbor: ipa bfd_neigh_iface bfd_neigh_local bfd_neigh_multihop
   BFD_NEIGHBOR->local = $3;
   BFD_NEIGHBOR->iface = $2;
   BFD_NEIGHBOR->multihop = $4;
+  BFD_NEIGHBOR->label = $5;
 
   if ($4 && $2)
     cf_error("Neighbor cannot set both interface and multihop");
 
   if ($4 && ipa_zero($3))
     cf_error("Multihop neighbor requires specified local address");
+
+  if ($5){
+    struct bfd_neighbor *other_nei;
+    WALK_LIST(other_nei, BFD_CFG->neigh_list){
+      if (other_nei != this_bfd_neighbor && other_nei->label == $5)
+        cf_error("Neighbor label %d already used", $5);
+    }
+  }
 };
 
 

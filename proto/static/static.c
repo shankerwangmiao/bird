@@ -206,9 +206,10 @@ static_update_bfd(struct static_proto *p, struct static_route *r)
   if (bfd_up && !r->bfd_req)
   {
     // ip_addr local = ipa_nonzero(r->local) ? r->local : nb->ifa->ip;
-    r->bfd_req = bfd_request_session(p->p.pool, r->via, 
+    r->bfd_req = bfd_request_session(p->p.pool,
+				     r->bfd_label != 0 ? IPA_NONE : r->via,
 				     nb->ifa ? nb->ifa->ip : IPA_NONE,
-				     nb->iface, p->p.vrf,
+				     nb->iface, p->p.vrf, r->bfd_label,
 				     static_bfd_notify, r, NULL);
   }
 
@@ -320,6 +321,7 @@ static_same_dest(struct static_route *x, struct static_route *y)
 	  (x->onlink != y->onlink) ||
 	  (x->weight != y->weight) ||
 	  (x->use_bfd != y->use_bfd) ||
+	  (x->bfd_label != y->bfd_label) ||
 	  (!x->mls != !y->mls) ||
 	  ((x->mls) && (y->mls) && (x->mls->len != y->mls->len)))
 	return 0;
