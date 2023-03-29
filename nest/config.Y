@@ -150,7 +150,7 @@ CF_ENUM(T_ENUM_NET_EVPN_TYPE, NET_EVPN_, EAD, MAC, IMET, ES)
 %type <s> optproto
 %type <ra> r_args
 %type <sd> sym_args
-%type <i> proto_start echo_mask echo_size debug_mask debug_list debug_flag mrtdump_mask mrtdump_list mrtdump_flag export_mode limit_action net_type net_type_base tos password_algorithm
+%type <i> proto_start echo_mask echo_size debug_mask debug_list debug_flag mrtdump_mask mrtdump_list mrtdump_flag export_mode limit_action net_type net_type_base tos password_algorithm bfd_neigh_label
 %type <ps> proto_patt proto_patt2
 %type <cc> channel_start proto_channel nbrs_channel_start nbrs_channel
 %type <cl> limit_spec
@@ -618,6 +618,15 @@ password_item_end:
 /* BFD options - just dummy rule, rest in proto/bfd/config.Y */
 bfd_opts: '{' INVALID_TOKEN '}';
 
+
+bfd_neigh_label:
+ expr {
+  if ($1 == 0){
+    cf_error("BFD label cannot be zero");
+  }
+  $$ = $1;
+ }
+ ;
 
 /* Core commands */
 CF_CLI_HELP(SHOW, ..., [[Show status information]])

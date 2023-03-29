@@ -54,6 +54,7 @@ struct static_route {
     mpls_label_stack *mls;		/* MPLS label stack; may be NULL */
     adata *aspa;			/* ASPA provider list; may be NULL */
   };
+  u32 bfd_label;      /* Label for referred BFD session */
 };
 
 /*

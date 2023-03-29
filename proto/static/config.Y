@@ -47,7 +47,7 @@ static_route_finish(void)
 CF_DECLS
 
 CF_KEYWORDS(STATIC, ROUTE, VIA, DROP, REJECT, PROHIBIT, PREFERENCE, CHECK, LINK, DEV)
-CF_KEYWORDS(ONLINK, WEIGHT, RECURSIVE, IGP, TABLE, BLACKHOLE, UNREACHABLE, BFD, MPLS)
+CF_KEYWORDS(ONLINK, WEIGHT, RECURSIVE, IGP, TABLE, BLACKHOLE, UNREACHABLE, BFD, MPLS, TRACK)
 CF_KEYWORDS(TRANSIT, PROVIDERS)
 
 
@@ -100,7 +100,7 @@ stat_nexthop:
   }
   | stat_nexthop ONLINK bool {
     this_snh->onlink = $3;
-    if (this_snh->use_bfd && this_snh->onlink)
+    if (this_snh->use_bfd && this_snh->onlink && this_snh->bfd_label == 0)
       cf_error("Options 'bfd' and 'onlink' cannot be combined");
   }
   | stat_nexthop WEIGHT expr {
@@ -111,6 +111,11 @@ stat_nexthop:
     this_snh->use_bfd = $3; cf_check_bfd($3);
     if (this_snh->use_bfd && this_snh->onlink)
       cf_error("Options 'bfd' and 'onlink' cannot be combined");
+    this_snh->bfd_label = 0;
+  }
+  | stat_nexthop BFD TRACK bfd_neigh_label {
+    this_snh->use_bfd = 1; cf_check_bfd(1);
+    this_snh->bfd_label = $4;
   }
 ;
 

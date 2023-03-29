@@ -696,9 +696,24 @@ bfd_request_notify(struct bfd_request *req, u8 state, u8 remote, u8 diag)
 }
 
 static int
-bfd_add_request(struct bfd_proto *p, struct bfd_request *req)
+bfd_add_request(struct bfd_proto *p, struct bfd_request *req, struct bfd_config *cf)
 {
-  struct bfd_config *cf = (struct bfd_config *) (p->p.cf);
+  struct bfd_request *ref_req = NULL;
+  if (req->label != 0 && ipa_zero(req->addr)){
+    struct bfd_neighbor *nei;
+    WALK_LIST(nei, cf->neigh_list){
+      if (nei->label == req->label){
+        ref_req = nei->req;
+        break;
+      }
+    }
+    if (ref_req == NULL){
+      return 0;
+    }
+  }
+  struct bfd_request *actual_req = req;
+  if (ref_req != NULL)
+    req = ref_req;
 
   if (p->p.vrf_set && (p->p.vrf != req->vrf))
     return 0;
@@ -716,6 +731,8 @@ bfd_add_request(struct bfd_proto *p, struct bfd_request *req)
   if (!s)
     s = bfd_add_session(p, req->addr, req->local, req->iface, &req->opts);
 
+  req = actual_req;
+
   rem_node(&req->n);
   add_tail(&s->request_list, &req->n);
   req->session = s;
@@ -731,13 +748,19 @@ bfd_add_request(struct bfd_proto *p, struct bfd_request *req)
   return 1;
 }
 
+static int
+bfd_add_current_request(struct bfd_proto *p, struct bfd_request *req)
+{
+  return bfd_add_request(p, req, (struct bfd_config *) (p->p.cf));
+}
+
 static void
 bfd_submit_request(struct bfd_request *req)
 {
   node *n;
 
   WALK_LIST(n, bfd_proto_list)
-    if (bfd_add_request(SKIP_BACK(struct bfd_proto, bfd_node, n), req))
+    if (bfd_add_current_request(SKIP_BACK(struct bfd_proto, bfd_node, n), req))
       return;
 
   rem_node(&req->n);
@@ -747,12 +770,12 @@ bfd_submit_request(struct bfd_request *req)
 }
 
 static void
-bfd_take_requests(struct bfd_proto *p)
+bfd_take_requests(struct bfd_proto *p, struct bfd_config *cf)
 {
   node *n, *nn;
 
   WALK_LIST_DELSAFE(n, nn, bfd_wait_list)
-    bfd_add_request(p, SKIP_BACK(struct bfd_request, n, n));
+    bfd_add_request(p, SKIP_BACK(struct bfd_request, n, n), cf);
 }
 
 static void
@@ -773,7 +796,7 @@ static const struct resclass bfd_request_class;
 
 struct bfd_request *
 bfd_request_session(pool *p, ip_addr addr, ip_addr local,
-		    struct iface *iface, struct iface *vrf,
+		    struct iface *iface, struct iface *vrf, u32 label,
 		    void (*hook)(struct bfd_request *), void *data,
 		    const struct bfd_options *opts)
 {
@@ -786,6 +809,7 @@ bfd_request_session(pool *p, ip_addr addr, ip_addr local,
   req->local = local;
   req->iface = iface;
   req->vrf = vrf;
+  req->label = label;
 
   if (opts)
     req->opts = *opts;
@@ -813,9 +837,8 @@ bfd_update_request(struct bfd_request *req, const struct bfd_options *opts)
 }
 
 static void
-bfd_request_free(resource *r)
+bfd_request_detach_from_session(struct bfd_request *req)
 {
-  struct bfd_request *req = (struct bfd_request *) r;
   struct bfd_session *s = req->session;
 
   rem_node(&req->n);
@@ -825,6 +848,13 @@ bfd_request_free(resource *r)
 
   if (s && EMPTY_LIST(s->request_list) && !s->notify_running)
     bfd_remove_session(s->ifa->bfd, s);
+}
+
+static void
+bfd_request_free(resource *r)
+{
+  struct bfd_request *req = (struct bfd_request *) r;
+  return bfd_request_detach_from_session(req);
 }
 
 static void
@@ -859,7 +889,7 @@ bfd_neigh_notify(struct neighbor *nb)
   if ((nb->scope > 0) && !n->req)
   {
     ip_addr local = ipa_nonzero(n->local) ? n->local : nb->ifa->ip;
-    n->req = bfd_request_session(p->p.pool, n->addr, local, nb->iface, p->p.vrf, NULL, NULL, NULL);
+    n->req = bfd_request_session(p->p.pool, n->addr, local, nb->iface, p->p.vrf, n->label, NULL, NULL, NULL);
   }
 
   if ((nb->scope <= 0) && n->req)
@@ -876,7 +906,7 @@ bfd_start_neighbor(struct bfd_proto *p, struct bfd_neighbor *n)
 
   if (n->multihop)
   {
-    n->req = bfd_request_session(p->p.pool, n->addr, n->local, NULL, p->p.vrf, NULL, NULL, NULL);
+    n->req = bfd_request_session(p->p.pool, n->addr, n->local, NULL, p->p.vrf, n->label, NULL, NULL, NULL);
     return;
   }
 
@@ -908,16 +938,37 @@ bfd_stop_neighbor(struct bfd_proto *p UNUSED, struct bfd_neighbor *n)
   if (n->neigh)
     n->neigh->data = NULL;
   n->neigh = NULL;
+  list tmp_list;
+  init_list(&tmp_list);
+  if (n->label != 0){
+    if (n->req && n->req->session){
+      struct bfd_session *s = n->req->session;
+      struct node *nd, *ndn;
+      WALK_LIST_DELSAFE(nd, ndn, s->request_list){
+        struct bfd_request *req = SKIP_BACK(struct bfd_request, n, nd);
+        if (req->label == n->label && ipa_zero(req->addr)){
+          bfd_request_detach_from_session(req);
+          add_tail(&tmp_list, &req->n);
+        }
+      }
+    }
+  }
 
   rfree(n->req);
   n->req = NULL;
+
+  struct node *nd;
+  WALK_LIST_FIRST(nd, tmp_list){
+    struct bfd_request *req = SKIP_BACK(struct bfd_request, n, nd);
+    bfd_submit_request(req);
+  }
 }
 
 static inline int
 bfd_same_neighbor(struct bfd_neighbor *x, struct bfd_neighbor *y)
 {
   return ipa_equal(x->addr, y->addr) && ipa_equal(x->local, y->local) &&
-    (x->iface == y->iface) && (x->multihop == y->multihop);
+    (x->iface == y->iface) && (x->multihop == y->multihop) && (x->label == y->label);
 }
 
 static void
@@ -944,9 +995,17 @@ bfd_reconfigure_neighbors(struct bfd_proto *p, struct bfd_config *new)
   next:;
   }
 
+  int have_new_labeled_neigh = 0;
   WALK_LIST(nn, new->neigh_list)
-    if (!nn->active)
+    if (!nn->active){
       bfd_start_neighbor(p, nn);
+      if(nn->label != 0){
+        have_new_labeled_neigh = 1;
+      }
+    }
+  if (have_new_labeled_neigh){
+    bfd_take_requests(p, new);
+  }
 }
 
 
@@ -1098,11 +1157,11 @@ bfd_start(struct proto *P)
 
   birdloop_leave(p->loop);
 
-  bfd_take_requests(p);
-
   struct bfd_neighbor *n;
   WALK_LIST(n, cf->neigh_list)
     bfd_start_neighbor(p, n);
+
+  bfd_take_requests(p, cf);
 
   birdloop_start(p->loop);
 
