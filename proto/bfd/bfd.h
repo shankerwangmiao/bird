@@ -223,8 +223,8 @@ void bfd_show_sessions(struct proto *P);
 /* packets.c */
 void bfd_send_ctl(struct bfd_proto *p, struct bfd_session *s, int final);
 sock * bfd_open_rx_sk(struct bfd_proto *p, int multihop, int inet_version);
-sock * bfd_open_rx_sk_bound(struct bfd_proto *p, ip_addr local, struct iface *ifa);
-sock * bfd_open_tx_sk(struct bfd_proto *p, ip_addr local, struct iface *ifa);
+sock * bfd_open_rx_sk_bound(struct bfd_proto *p, ip_addr local, struct iface *ifa, int af);
+sock * bfd_open_tx_sk(struct bfd_proto *p, ip_addr local, struct iface *ifa, int af);
 
 
 #endif /* _BIRD_BFD_H_ */

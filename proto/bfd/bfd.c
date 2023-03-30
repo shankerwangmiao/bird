@@ -119,7 +119,7 @@ static list STATIC_LIST_INIT(bfd_wait_list);
 const char *bfd_state_names[] = { "AdminDown", "Down", "Init", "Up" };
 
 static void bfd_session_set_min_tx(struct bfd_session *s, u32 val);
-static struct bfd_iface *bfd_get_iface(struct bfd_proto *p, ip_addr local, struct iface *iface);
+static struct bfd_iface *bfd_get_iface(struct bfd_proto *p, ip_addr local, struct iface *iface, int af);
 static void bfd_free_iface(struct bfd_iface *ifa);
 static inline void bfd_notify_kick(struct bfd_proto *p);
 
@@ -421,7 +421,9 @@ bfd_add_session(struct bfd_proto *p, ip_addr addr, ip_addr local, struct iface *
 {
   birdloop_enter(p->loop);
 
-  struct bfd_iface *ifa = bfd_get_iface(p, local, iface);
+  int af = ipa_is_ip4(addr) ? SK_IPV4 : SK_IPV6;
+
+  struct bfd_iface *ifa = bfd_get_iface(p, local, iface, af);
 
   struct bfd_session *s = sl_allocz(p->session_slab);
   s->addr = addr;
@@ -562,7 +564,7 @@ bfd_find_iface_config(struct bfd_config *cf, struct iface *iface)
 }
 
 static struct bfd_iface *
-bfd_get_iface(struct bfd_proto *p, ip_addr local, struct iface *iface)
+bfd_get_iface(struct bfd_proto *p, ip_addr local, struct iface *iface, int af)
 {
   struct bfd_iface *ifa;
 
@@ -579,11 +581,11 @@ bfd_get_iface(struct bfd_proto *p, ip_addr local, struct iface *iface)
   ifa->cf = ic;
   ifa->bfd = p;
 
-  ifa->sk = bfd_open_tx_sk(p, local, iface);
+  ifa->sk = bfd_open_tx_sk(p, local, iface, af);
   ifa->uc = 1;
 
   if (cf->strict_bind)
-    ifa->rx = bfd_open_rx_sk_bound(p, local, iface);
+    ifa->rx = bfd_open_rx_sk_bound(p, local, iface, af);
 
   add_tail(&p->iface_list, &ifa->n);
 
